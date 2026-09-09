@@ -43,7 +43,7 @@ except Exception:
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 EXPR_DIR = os.path.join(APP_DIR, "expressions")
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".dshw-desktop-pet.json")
-UPDATE_URL = "https://github.com/shiyi312/DeepSeek-Whale-widget-desktop"
+UPDATE_URL = "https://github.com/shiyi312/DeepSeek-Whale-Desktop-Pet"
 LOG_PATH = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "dshw-pet.log")
 
 LOCAL_VERSION = "4.1.0"
@@ -1770,7 +1770,7 @@ class PetWindow(QWidget):
     def _check_update_worker(self):
         try:
             req = urllib.request.Request(
-                "https://api.github.com/repos/shiyi312/DeepSeek-Whale-widget-desktop/releases/latest",
+                "https://api.github.com/repos/shiyi312/DeepSeek-Whale-Desktop-Pet/releases/latest",
                 headers={"User-Agent": "WhaleDesktopPet", "Accept": "application/vnd.github+json"})
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read().decode("utf-8", "replace"))
