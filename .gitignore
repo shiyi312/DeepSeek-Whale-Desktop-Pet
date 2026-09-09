@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller 产物
+dist/
+build/
+*.spec.bak
+
+# 系统文件
+Thumbs.db
+desktop.ini
