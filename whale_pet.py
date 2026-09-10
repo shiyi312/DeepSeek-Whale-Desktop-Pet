@@ -232,12 +232,15 @@ RULES_TEMPLATE = """# ==========================================================
 #   · 触发台词：命中后桌宠说的话，随便写
 #   · 触发概率：打开该应用时有百分之多少的几率说这句话
 #       例：30 表示 30% 概率触发（想每次都说就填 100；想让桌宠少唠叨就填 10~30）
+#       ⚠️ 概率 ≠ 冷却：概率是每次打开时的命中几率（这里填 100 就是每次都命中），
+#          冷却在「设置 → 系统 → 应用打开监控 → 触发冷却」里调，默认 0 秒（每次都触发）。
 #   · 是否启用：1 = 开启这条规则；0 = 暂时关闭（不用删掉）
 #
 # 注意：
 #   · 以 # 开头的整行是注释，空白行忽略；
-#   · 同一个应用 5 分钟内只会说一次，不会一直刷屏；
-#   · 改完保存本文件后，设置 → 系统 →「重新加载台词与规则」即可生效。
+#   · 默认不需要冷却：每次切到该应用都会说；若嫌唠叨，把「触发冷却」调成 60~300 秒；
+#   · 进程名取不到时（应用以管理员运行等）会自动改用**窗口标题**匹配；
+#   · 改完保存本文件会自动重新加载（也可以点「重新加载规则」）。
 #
 # 下面是示例规则（可以随意删改）：
 """
@@ -639,9 +642,8 @@ class HudCard(QWidget):
     def __init__(self, parent):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._token = 0
-        self.time_text = ""
-        self.font_px = 11
+        self.data = {}
+        self.font_px = 16
         self.theme = "blue"
         self.tint = "idle"
         self.abbrev = True
@@ -650,13 +652,12 @@ class HudCard(QWidget):
         self.theme = key if key in self.THEMES else "blue"
         self.update()
 
-    def set_content(self, token_val, time_text, font_px, tint="idle", abbrev=None):
-        self._token = max(0, int(token_val))
-        self.time_text = time_text
-        self.font_px = max(10, min(20, int(font_px)))
+    def set_content(self, data, font_px, tint="idle", abbrev=True):
+        """data: {"token": 数字或None, "time": "HH:MM:SS", "date": "2026-09-11 周五"}"""
+        self.data = dict(data or {})
+        self.font_px = max(12, min(26, int(font_px)))
         self.tint = tint if tint in ("idle", "gain", "cost") else "idle"
-        if abbrev is not None:
-            self.abbrev = bool(abbrev)
+        self.abbrev = bool(abbrev)
         self.update()
 
     def _font(self):
@@ -666,15 +667,29 @@ class HudCard(QWidget):
         return f
 
     def _parts(self):
-        """返回 [(文本, 颜色), ...] 分段，及总宽。"""
-        abbr_num, abbr_unit = fmt_token(self._token)
-        num, unit = (abbr_num, abbr_unit) if self.abbrev else (f"{self._token:,}", "")
-        num_color = {"idle": self.NUM_IDLE, "gain": self.NUM_GAIN, "cost": self.NUM_COST}[self.tint]
-        parts = [("Token：", self.PREFIX), (num, num_color)]
-        if unit:
-            parts.append((unit, self.PREFIX))
-        parts.append(("   ", self.PREFIX))
-        parts.append((self.time_text, self.THEMES.get(self.theme, self.THEMES["blue"])["time"]))
+        """返回 [(文本, 颜色), ...]：Token 段与时间/日期段互不绑定，谁空谁不画。"""
+        parts = []
+        token = self.data.get("token")
+        if token is not None:
+            if self.abbrev:
+                num, unit = fmt_token(int(token))
+            else:
+                num, unit = f"{int(token):,}", ""
+            color = {"idle": self.NUM_IDLE, "gain": self.NUM_GAIN, "cost": self.NUM_COST}[self.tint]
+            parts.append(("Token：", self.PREFIX))
+            parts.append((num, color))
+            if unit:
+                parts.append((unit, self.PREFIX))
+        date = str(self.data.get("date") or "")
+        tm = str(self.data.get("time") or "")
+        if date or tm:
+            tcolor = self.THEMES.get(self.theme, self.THEMES["blue"])["time"]
+            if parts:
+                parts.append(("　　", tcolor))
+            if date:
+                parts.append((date + "  ", tcolor))
+            if tm:
+                parts.append((tm, tcolor))
         return parts
 
     def desired_width(self):
@@ -992,8 +1007,25 @@ class SettingsPanel(QWidget):
 
         card_act = Card("🕹️ 行为", "怎么动由你决定",
                         tip="跟随与躲避互斥（同时只会生效一个）；\n"
-                            "待机漫游可以和躲避共存，久无操作时自己散步")
+                            "待机漫游可以和躲避共存：设置「漫游启动延迟」秒内没有互动，\n"
+                            "她自己开始散步（0 秒 = 不自动漫游）；\n"
+                            "「躲避触发距离」= 鼠标离多近开始逃跑")
         card_act.add_checks([self.follow_check, self.evade_check, self.wander_check])
+        card_act.add(QLabel("漫游启动延迟"))
+        self.wander_delay_slider = QSlider(Qt.Horizontal)
+        self.wander_delay_slider.setRange(0, 600)
+        self.wander_delay_slider.setValue(pet.wander_delay)
+        self.wander_delay_value = QLabel("不自动漫游" if pet.wander_delay == 0
+                                        else f"{pet.wander_delay} 秒")
+        self.wander_delay_slider.valueChanged.connect(self._ok(self._on_wander_delay))
+        card_act.add_layout(self._row(self.wander_delay_slider, self.wander_delay_value))
+        card_act.add(QLabel("躲避触发距离"))
+        self.evade_range_slider = QSlider(Qt.Horizontal)
+        self.evade_range_slider.setRange(100, 1500)
+        self.evade_range_slider.setValue(pet.evade_range)
+        self.evade_range_value = QLabel(f"{pet.evade_range}px")
+        self.evade_range_slider.valueChanged.connect(self._ok(self._on_evade_range))
+        card_act.add_layout(self._row(self.evade_range_slider, self.evade_range_value))
         p1.addWidget(card_act)
 
         self.mirror_check = QCheckBox("贴边自动镜像")
@@ -1030,6 +1062,15 @@ class SettingsPanel(QWidget):
         self.hud_abbrev_check = QCheckBox("HUD 数字缩写（如 388.4W）")
         self.hud_abbrev_check.setChecked(pet.hud_abbrev)
         self.hud_abbrev_check.toggled.connect(self._ok(self._on_hud_abbrev))
+        self.hud_token_check = QCheckBox("显示 Token")
+        self.hud_token_check.setChecked(pet.hud_show_token)
+        self.hud_token_check.toggled.connect(self._ok(self._on_hud_show_token))
+        self.hud_time_check = QCheckBox("显示时间")
+        self.hud_time_check.setChecked(pet.hud_show_time)
+        self.hud_time_check.toggled.connect(self._ok(self._on_hud_show_time))
+        self.hud_date_check = QCheckBox("显示日期与星期")
+        self.hud_date_check.setChecked(pet.hud_show_date)
+        self.hud_date_check.toggled.connect(self._ok(self._on_hud_show_date))
         self.token_label = QLabel(f"当前 Token：{pet.token:,}")
         self.token_label.setObjectName("tokenLabel")
         token_row = QHBoxLayout()
@@ -1049,9 +1090,12 @@ class SettingsPanel(QWidget):
         card_token.add_layout(token_row)
         p2.addWidget(card_token)
 
-        card_hud = Card("🧾 HUD 显示", "桌宠下方的 Token / 时间显示",
-                        tip="HUD 显示在角色下方，不遮挡角色；数字缩写示例：388.4W")
-        card_hud.add_checks([self.hud_check, self.hud_abbrev_check])
+        card_hud = Card("🧾 HUD 显示", "桌宠下方的 Token / 时间显示（可分别开关）",
+                        tip="Token 与时间互不绑定：只想要时间就把「显示 Token」关掉；\n"
+                            "时间可单独显示日期与星期；字号随角色大小自动放大（15~24px）\n"
+                            "数字缩写示例：388.4W")
+        card_hud.add_checks([self.hud_check, self.hud_abbrev_check,
+                             self.hud_token_check, self.hud_time_check, self.hud_date_check])
         p2.addWidget(card_hud)
         p2.addStretch()
 
@@ -1228,13 +1272,23 @@ class SettingsPanel(QWidget):
 
         card_monitor = Card("🖥️ 应用打开监控", "打开指定软件时让她说一句",
                             tip="每行规则格式：匹配词 | 台词 | 触发概率 | 启用\n"
-                                "触发概率 0~100（如 30 表示 30% 几率）；同一应用 5 分钟内只说一次\n"
-                                "也可以直接编辑 .dshw-pet-rules.txt（文件内有详细说明）")
+                                "触发概率 0~100（如 30 表示 30% 几率），与冷却无关\n"
+                                "触发冷却 0 秒 = 每次打开都触发；嫌唠叨可调 60~300 秒\n"
+                                "进程名取不到时会自动改用窗口标题匹配\n"
+                                "也可以直接编辑 .dshw-pet-rules.txt（文件内有详细说明，改完自动生效）")
         card_monitor.add(self.monitor_check)
         card_monitor.add(self.rule_match_edit)
         card_monitor.add(self.rule_text_edit)
         card_monitor.add_layout(rule_btn_row)
         card_monitor.add(self.rule_list)
+        card_monitor.add(QLabel("触发冷却"))
+        self.cooldown_slider = QSlider(Qt.Horizontal)
+        self.cooldown_slider.setRange(0, 600)
+        self.cooldown_slider.setValue(pet.app_rule_cooldown)
+        self.cooldown_value = QLabel("每次打开都触发" if pet.app_rule_cooldown == 0
+                                     else f"{pet.app_rule_cooldown} 秒")
+        self.cooldown_slider.valueChanged.connect(self._ok(self._on_app_rule_cooldown))
+        card_monitor.add_layout(self._row(self.cooldown_slider, self.cooldown_value))
         card_monitor.add_row(self._plain_btn("编辑规则文件", self._on_open_rules),
                              self._plain_btn("重新加载规则", self._on_reload_external))
         p4.addWidget(card_monitor)
@@ -1538,6 +1592,27 @@ class SettingsPanel(QWidget):
     def _on_hud_abbrev(self, enabled):
         self.pet.set_hud_abbrev(enabled)
 
+    def _on_hud_show_token(self, enabled):
+        self.pet.set_hud_show_token(enabled)
+
+    def _on_hud_show_time(self, enabled):
+        self.pet.set_hud_show_time(enabled)
+
+    def _on_hud_show_date(self, enabled):
+        self.pet.set_hud_show_date(enabled)
+
+    def _on_app_rule_cooldown(self, val):
+        self.cooldown_value.setText("每次打开都触发" if val == 0 else f"{val} 秒")
+        self.pet.set_app_rule_cooldown(val)
+
+    def _on_wander_delay(self, val):
+        self.wander_delay_value.setText("不自动漫游" if val == 0 else f"{val} 秒")
+        self.pet.set_wander_delay(val)
+
+    def _on_evade_range(self, val):
+        self.evade_range_value.setText(f"{val}px")
+        self.pet.set_evade_range(val)
+
     def _on_snap(self, enabled):
         self.pet.set_snap_enabled(enabled)
 
@@ -1690,12 +1765,23 @@ class PetWindow(QWidget):
         self.autostart = bool(self.cfg.get("autostart", False))
         self.hud_visible = bool(self.cfg.get("hud_visible", True))
         self.hud_abbrev = bool(self.cfg.get("hud_abbrev", True))
+        self.hud_show_token = bool(self.cfg.get("hud_show_token", True))
+        self.hud_show_time = bool(self.cfg.get("hud_show_time", True))
+        self.hud_show_date = bool(self.cfg.get("hud_show_date", True))
         self.panel_pinned = bool(self.cfg.get("panel_pinned", False))
         _pos = self.cfg.get("panel_pos")
         self.panel_pos = list(_pos) if isinstance(_pos, (list, tuple)) and len(_pos) == 2 else None
         self.panel_tab = max(0, min(3, int(self.cfg.get("panel_tab", 0))))
         self.snap_enabled = bool(self.cfg.get("snap_enabled", True))
         self.app_monitor_enabled = bool(self.cfg.get("app_monitor_enabled", True))
+        self.app_rule_cooldown = max(0, min(600, int(self.cfg.get("app_rule_cooldown", 0))))
+        self.wander_delay = max(0, min(600, int(self.cfg.get("wander_delay", 60))))
+        self.evade_range = max(100, min(1500, int(self.cfg.get("evade_range", 500))))
+        self._last_rules_check = 0.0
+        try:
+            self._rules_mtime = os.path.getmtime(RULES_PATH)
+        except OSError:
+            self._rules_mtime = None
         rules = self.cfg.get("app_rules")
         if not isinstance(rules, list) or not rules:
             rules = copy.deepcopy(DEFAULT_APP_RULES)
@@ -1726,7 +1812,7 @@ class PetWindow(QWidget):
         self._hud_timer.start(1000)
         self._monitor_timer = QTimer(self)
         self._monitor_timer.timeout.connect(self._guard("应用监控", self._monitor_tick))
-        self._monitor_timer.start(2000)
+        self._monitor_timer.start(1000)
         self._last_fore_exe = ""
         self._rule_fire_time = {}
         self._checking_update = False
@@ -2055,11 +2141,12 @@ class PetWindow(QWidget):
 
     # ---------- Token 趣味系统 ----------
     def _apply_layout(self):
-        # 鲸鱼娘同款白框比例：宽约角色 86%、高约角色 15%；与角色不重叠，避免挡字
-        card_h = max(32, round(self.size_px * 0.15))
-        card_w = max(round(self.size_px * 0.86), min(max(self.hud_card.desired_width(), 120), 320))
+        # 鲸鱼娘同款白框比例：宽约角色 86%、高约角色 17%；与角色不重叠，避免挡字
+        card_h = max(38, round(self.size_px * 0.17))
+        card_w = max(round(self.size_px * 0.86), min(max(self.hud_card.desired_width(), 140), 480))
         win_w = max(self.size_px, card_w)
-        if self.hud_visible:
+        has_content = bool(self._hud_parts())
+        if self.hud_visible and has_content:
             win_h = self.size_px + card_h + HUD_GAP
         else:
             win_h = self.size_px + 4
@@ -2069,20 +2156,28 @@ class PetWindow(QWidget):
         lx = (win_w - self.size_px) // 2
         self.label.setGeometry(lx, 0, self.size_px, self.size_px)
         self.hud_card.setGeometry((win_w - card_w) // 2, self.size_px + HUD_GAP, card_w, card_h)
-        self.hud_card.setVisible(self.hud_visible)
+        self.hud_card.setVisible(self.hud_visible and has_content)
         self.label.raise_()
 
     def _hud_font_px(self):
-        # 鲸鱼娘基准 5% 偏小，放大到 6.5%（用户要求看得清）：13~18px
-        return max(13, min(18, int(self.size_px * 0.065)))
+        # 用户反馈要更大更清楚：按角色高 8% 缩放，15~24px
+        return max(15, min(24, int(self.size_px * 0.08)))
+
+    def _hud_parts(self):
+        """组装 HUD 内容：Token 与时间/日期各自独立开关，谁关掉就不显示谁。"""
+        now = time.localtime()
+        data = {}
+        if self.hud_show_token and self.token_enabled:
+            data["token"] = self._shown_token
+        if self.hud_show_time:
+            data["time"] = time.strftime("%H:%M:%S", now)
+            if self.hud_show_date:
+                data["date"] = time.strftime("%Y-%m-%d", now) + " 周" + "一二三四五六日"[now.tm_wday]
+        return data
 
     def _update_hud(self):
-        try:
-            now = time.strftime("%H:%M:%S")
-        except Exception:
-            now = ""
         self.hud_card.apply_theme(self.bubble_color)
-        self.hud_card.set_content(self._shown_token, now, self._hud_font_px(), "idle", self.hud_abbrev)
+        self.hud_card.set_content(self._hud_parts(), self._hud_font_px(), "idle", self.hud_abbrev)
         self._apply_layout()
 
     # ---------- 原版数字滚动动画（700ms easeOutCubic） ----------
@@ -2107,11 +2202,9 @@ class PetWindow(QWidget):
     def _on_token_roll(self, v):
         self._shown_token = int(v)
         if self.token_enabled:
-            # 数字变化颜色反馈：增加 → 亮蓝（放大脉冲），消耗 → 红
             tint = "gain" if self.token > self._shown_token else "cost"
             pulse_font = self._hud_font_px() + (1 if tint != "idle" else 0)
-            self.hud_card.set_content(self._shown_token, time.strftime("%H:%M:%S"),
-                                      pulse_font, tint, self.hud_abbrev)
+            self.hud_card.set_content(self._hud_parts(), pulse_font, tint, self.hud_abbrev)
             self._apply_layout()
 
     def _on_token_roll_done(self):
@@ -2339,18 +2432,53 @@ class PetWindow(QWidget):
         chance = int(rule.get("chance", 100))
         return chance >= 100 or random.random() * 100 < chance
 
-    def _monitor_tick(self):
-        if not self.app_monitor_enabled or not self.bubble_on:
-            return
-        exe, title = self._get_foreground_exe()
-        if not exe or "whaledesktop" in exe:
-            return
-        if exe == self._last_fore_exe:
-            return
-        self._last_fore_exe = exe
+    def _rule_key(self, rule):
+        """冷却按规则内容记录（不用序号，增删规则不会错位）。"""
+        return f"{str(rule.get('match', '')).strip().lower()}|{str(rule.get('text', '')).strip()}"
+
+    def _maybe_reload_rules(self):
+        """规则文件被记事本改过后自动重载（无需手动点按钮）。"""
         now = time.monotonic()
-        hay = exe + " " + title.lower()
-        for i, rule in enumerate(self.app_rules):
+        if now - self._last_rules_check < 3:
+            return
+        self._last_rules_check = now
+        try:
+            mtime = os.path.getmtime(RULES_PATH)
+        except OSError:
+            return
+        if self._rules_mtime is not None and mtime != self._rules_mtime:
+            self._rules_mtime = mtime
+            rules = load_rules_file()
+            if rules:
+                self.app_rules = rules
+                self._rule_fire_time = {}
+                self._log(f"检测到规则文件变化，已自动重新加载（{len(rules)} 条）")
+                panel = self.settings_panel
+                if panel is not None and panel.isVisible():
+                    try:
+                        panel._refresh_rules()
+                    except Exception:
+                        pass
+        else:
+            self._rules_mtime = mtime
+
+    def _monitor_tick(self):
+        if not self.app_monitor_enabled:
+            return
+        self._maybe_reload_rules()
+        exe, title = self._get_foreground_exe()
+        if "whaledesktop" in exe:
+            return
+        # 进程名拿不到时（应用以更高权限运行等）改用窗口标题兜底匹配
+        ident = exe if exe else ("title:" + title.strip().lower())
+        if not ident or ident == self._last_fore_exe:
+            return
+        self._last_fore_exe = ident
+        hay = (exe + " " + title).lower()
+        if not hay.strip():
+            return
+        now = time.monotonic()
+        for rule in self.app_rules:
             if not isinstance(rule, dict) or not rule.get("enabled"):
                 continue
             match = str(rule.get("match", "")).strip().lower()
@@ -2358,12 +2486,20 @@ class PetWindow(QWidget):
             if not match or not text or match not in hay:
                 continue
             if not self._rule_chance_hit(rule):
-                continue        # 概率未命中：跳过这条规则
-            last = self._rule_fire_time.get(i, 0.0)
-            if now - last < 300:
+                self._log(f"应用监控：规则[{match}] 概率未命中（{rule.get('chance', 100)}%）")
+                continue
+            last = self._rule_fire_time.get(self._rule_key(rule), 0.0)
+            if self.app_rule_cooldown > 0 and now - last < self.app_rule_cooldown:
+                left = int(self.app_rule_cooldown - (now - last))
+                self._log(f"应用监控：规则[{match}] 冷却中，{left} 秒后可再触发"
+                          f"（可在设置面板把「触发冷却」调成 0 秒=每次都触发）")
                 return
-            self._rule_fire_time[i] = now
-            self._log(f"应用监控触发: {match} -> {text}（{exe} / {title}）")
+            self._rule_fire_time[self._rule_key(rule)] = now
+            self._log(f"应用监控触发: {match} -> {text}"
+                      f"（{exe or '仅标题匹配'} / {title}）")
+            if not self.bubble_on:
+                self._log("应用监控：气泡显示已关闭，本次未弹出（可在设置里开启气泡）")
+                return
             self.show_bubble_quick(text)
             return
 
@@ -2492,7 +2628,7 @@ class PetWindow(QWidget):
         dx = cx - cur.x()
         dy = cy - cur.y()
         d = math.hypot(dx, dy)
-        if d >= 500:
+        if d >= self.evade_range:
             self._vx *= 0.85
             self._vy *= 0.85
             return False
@@ -2520,7 +2656,7 @@ class PetWindow(QWidget):
             ux, uy = math.cos(ang), math.sin(ang)
         else:
             ux, uy = dx / d, dy / d
-        sp = 600.0 * 500.0 / max(d, 1)
+        sp = 600.0 * self.evade_range / max(d, 1)
         tvx, tvy = ux * sp, uy * sp
         k = min(1.0, 3.0 * dt)
         self._vx += (tvx - self._vx) * k
@@ -2537,7 +2673,9 @@ class PetWindow(QWidget):
 
     def _wander_tick(self, dt):
         if not self._wander_on:
-            if time.monotonic() - self._last_interact < 60:
+            if self.wander_delay <= 0:
+                return                      # 0 秒 = 不自动开始漫游
+            if time.monotonic() - self._last_interact < self.wander_delay:
                 return
             # 与需要保持静止/占用的状态互斥（对标鲸鱼娘 frozen/follow/弹射/右键拖拽）
             if self.follow_mode or self._sling_active or self._r_dragging or self.lock_position:
@@ -3084,6 +3222,33 @@ class PetWindow(QWidget):
         self._update_hud()
         self.save()
 
+    def set_hud_show_token(self, enabled):
+        self.hud_show_token = bool(enabled)
+        self._update_hud()
+        self.save()
+
+    def set_hud_show_time(self, enabled):
+        self.hud_show_time = bool(enabled)
+        self._update_hud()
+        self.save()
+
+    def set_hud_show_date(self, enabled):
+        self.hud_show_date = bool(enabled)
+        self._update_hud()
+        self.save()
+
+    def set_app_rule_cooldown(self, sec):
+        self.app_rule_cooldown = max(0, min(600, int(sec)))
+        self.save()
+
+    def set_wander_delay(self, sec):
+        self.wander_delay = max(0, min(600, int(sec)))
+        self.save()
+
+    def set_evade_range(self, px):
+        self.evade_range = max(100, min(1500, int(px)))
+        self.save()
+
     def save_rules(self):
         """保存规则（写配置 + 回写外部规则文件）。"""
         self.save()
@@ -3239,6 +3404,12 @@ class PetWindow(QWidget):
         cfg["panel_tab"] = self.panel_tab
         cfg["snap_enabled"] = self.snap_enabled
         cfg["app_monitor_enabled"] = self.app_monitor_enabled
+        cfg["app_rule_cooldown"] = self.app_rule_cooldown
+        cfg["wander_delay"] = self.wander_delay
+        cfg["evade_range"] = self.evade_range
+        cfg["hud_show_token"] = self.hud_show_token
+        cfg["hud_show_time"] = self.hud_show_time
+        cfg["hud_show_date"] = self.hud_show_date
         cfg["app_rules"] = self.app_rules
         cfg["x"] = self.x()
         cfg["y"] = self.y()
