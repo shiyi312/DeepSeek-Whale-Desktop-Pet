@@ -28,7 +28,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QSlider,
+    QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QGridLayout, QSlider,
     QCheckBox, QComboBox, QLineEdit, QPushButton, QFrame, QListWidget,
     QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QSystemTrayIcon, QMenu,
     QScrollArea, QMessageBox, QTabWidget, QFileDialog, QInputDialog
@@ -53,6 +53,20 @@ SFX_POOL_SIZE = 5
 QQ_GROUP = "254668799"
 QQ_GROUP_URL = "https://qun.qq.com/qq/254668799"
 
+# 深色列表样式（控件级设置，确保 viewport 与滚动条都是深色，不用系统原生外观）
+LIST_QSS = """
+QListWidget { background: rgba(15,23,42,0.55); border: 1.5px solid rgba(148,163,184,0.30);
+    border-radius: 10px; color: #e2e8f0; font-size: 16px; padding: 4px; outline: none; }
+QListWidget::item { border-radius: 8px; padding: 8px 10px; margin: 2px 0; }
+QListWidget::item:hover { background: rgba(56,189,248,0.14); }
+QListWidget::item:selected { background: rgba(34,211,238,0.28); color: #ffffff; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+QScrollBar::handle:vertical { background: rgba(148,163,184,0.6); border-radius: 5px; min-height: 26px; }
+QScrollBar::handle:vertical:hover { background: rgba(56,189,248,0.8); }
+QScrollBar:horizontal { background: transparent; height: 0px; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0px; width: 0px; }
+"""
+
 DEFAULT_APP_RULES = [
     {"match": "steam", "text": "又在打游戏啦？记得适可而止哦~", "enabled": True},
     {"match": "code", "text": "敲代码辛苦了，起来活动一下吧！", "enabled": True},
@@ -66,8 +80,7 @@ SIZE_SCALE_MAX = 2.5
 EDGE_MARGIN = 40
 DEFAULT_SIZE_LEVEL = 10
 
-RANDOM_TEXTS = [
-    "你好呀，我是 DeepSeek 小鲸鱼~",
+RANDOM_TEXTS = [    "你好呀，我是 DeepSeek 小鲸鱼~",
     "今天也要元气满满哦！",
     "要记得喝水休息一下。",
     "抢票加油！",
@@ -725,7 +738,7 @@ class SettingsPanel(QWidget):
         self.pet = pet
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedWidth(470)
+        self.setFixedWidth(500)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
@@ -735,45 +748,47 @@ class SettingsPanel(QWidget):
             QFrame#glassCard { background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                 stop:0 rgba(30,41,59,0.97), stop:1 rgba(15,23,42,0.97));
                 border: 1px solid rgba(148,163,184,0.35); border-radius: 20px; color: #f8fafc; }
-            QLabel { color: #f8fafc; font-size: 15px; }
-            QLabel#title { font-size: 23px; font-weight: 800; color: #22d3ee; }
-            QLabel#section { font-size: 14px; color: #a5b4fc; font-weight: 700; margin-top: 6px; }
-            QLabel#tokenLabel { color: #fbbf24; font-size: 15px; font-weight: 700; }
+            QWidget { font-family: "Microsoft YaHei UI", "Microsoft YaHei"; }
+            QLabel { color: #f8fafc; font-size: 16px; }
+            QLabel#title { font-size: 24px; font-weight: 800; color: #22d3ee; }
+            QLabel#section { font-size: 15px; color: #a5b4fc; font-weight: 700; margin-top: 8px; }
+            QLabel#tokenLabel { color: #fbbf24; font-size: 16px; font-weight: 700; }
             QComboBox, QLineEdit {
                 background: rgba(255,255,255,0.10); border: 1.5px solid rgba(255,255,255,0.22);
-                border-radius: 10px; padding: 8px 12px; color: white; font-size: 15px; font-weight: 600;
+                border-radius: 10px; padding: 9px 12px; color: white; font-size: 16px; font-weight: 600;
             }
-            QLineEdit { placeholder-text-color: rgba(148,163,184,0.65); }
             QComboBox QAbstractItemView { background: #0f172a; color: white; selection-background-color: #2563eb;
-                font-size: 14px; padding: 5px; border-radius: 10px; }
+                font-size: 15px; padding: 6px; border-radius: 10px; }
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #7c3aed);
-                border: none; border-radius: 11px; padding: 8px 14px; color: white;
-                font-size: 15px; font-weight: 700;
+                border: none; border-radius: 11px; padding: 9px 12px; color: white;
+                font-size: 16px; font-weight: 700;
             }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #8b5cf6); }
             QPushButton#danger { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ef4444, stop:1 #b91c1c); }
             QPushButton#closeBtn { background: rgba(255,255,255,0.14); color: #f87171; border: none;
-                border-radius: 14px; font-size: 16px; font-weight: 800; }
+                border-radius: 14px; font-size: 16px; font-weight: 800; padding: 0; }
             QPushButton#closeBtn:hover { background: rgba(239,68,68,0.90); color: white; }
-            QCheckBox { color: #e2e8f0; font-size: 15px; font-weight: 600; spacing: 8px; }
+            QCheckBox { color: #e2e8f0; font-size: 16px; font-weight: 600; spacing: 8px; }
             QCheckBox:hover { color: #38bdf8; }
-            QCheckBox::indicator { width: 18px; height: 18px; border-radius: 5px; border: 2px solid rgba(255,255,255,0.45);
+            QCheckBox::indicator { width: 20px; height: 20px; border-radius: 6px; border: 2px solid rgba(255,255,255,0.45);
                 background: rgba(255,255,255,0.06); }
             QCheckBox::indicator:hover { border-color: #38bdf8; }
             QCheckBox::indicator:checked { background: #22d3ee; border-color: #22d3ee; }
             QSlider::groove:horizontal { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.18); }
             QSlider::sub-page:horizontal { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #22d3ee); border-radius: 4px; }
             QSlider::handle:horizontal { background: white; width: 20px; height: 20px; margin: -6px 0; border-radius: 10px; border: 3px solid #22d3ee; }
-            QListWidget { background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.18);
-                border-radius: 10px; color: #e2e8f0; font-size: 14px; padding: 4px; }
-            QListWidget::item { border-radius: 8px; padding: 6px 8px; }
-            QListWidget::item:hover { background: rgba(255,255,255,0.10); }
-            QListWidget::item:selected { background: #2563eb; color: white; }
             QTabWidget::pane { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; }
-            QTabBar::tab { background: rgba(255,255,255,0.08); color: #cbd5e1; padding: 8px 14px;
-                border-top-left-radius: 10px; border-top-right-radius: 10px; font-size: 14px; font-weight: 700; }
+            QTabBar::tab { background: rgba(255,255,255,0.08); color: #cbd5e1; padding: 9px 16px;
+                border-top-left-radius: 10px; border-top-right-radius: 10px; font-size: 15px; font-weight: 700; }
             QTabBar::tab:selected { background: #2563eb; color: white; }
+            /* 深色细滚动条（列表 / 滚动区通用） */
+            QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+            QScrollBar::handle:vertical { background: rgba(148,163,184,0.6); border-radius: 5px; min-height: 28px; }
+            QScrollBar::handle:vertical:hover { background: rgba(56,189,248,0.8); }
+            QScrollBar:horizontal { background: transparent; height: 0px; }
+            QScrollBar::add-line, QScrollBar::sub-line { height: 0px; width: 0px; }
+            QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
         """)
 
         shadow = QGraphicsDropShadowEffect(self)
@@ -827,6 +842,8 @@ class SettingsPanel(QWidget):
         self.size_slider.setValue(pet.size_level)
         self.size_value = QLabel(str(pet.size_level))
         self.size_slider.valueChanged.connect(self._on_size)
+        self.size_slider.sliderPressed.connect(pet.begin_panel_lock)
+        self.size_slider.sliderReleased.connect(self._on_size_done)
         p1.addLayout(self._row(self.size_slider, self.size_value))
 
         p1.addWidget(self._section("音量"))
@@ -941,7 +958,12 @@ class SettingsPanel(QWidget):
         self.custom_empty = QLabel("⚠️ 自定义台词库为空，请先添加")
         self.custom_empty.setStyleSheet("color:#fca5a5; font-size:14px; font-weight:700;")
         self.custom_list = QListWidget()
-        self.custom_list.setMaximumHeight(110)
+        self.custom_list.setMaximumHeight(120)
+        self.custom_list.setWordWrap(True)
+        self.custom_list.setSpacing(2)
+        self.custom_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.custom_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.custom_list.setStyleSheet(LIST_QSS)
         add_btn = QPushButton("添加为自定义台词")
         add_btn.clicked.connect(self._on_add_custom)
         delete_btn = QPushButton("删除选中台词")
@@ -951,7 +973,7 @@ class SettingsPanel(QWidget):
         p3.addWidget(self.custom_list)
         p3.addWidget(add_btn)
         p3.addWidget(delete_btn)
-        lines_btn = QPushButton("编辑台词文件（txt，每行一句）")
+        lines_btn = QPushButton("编辑台词文件（每行一句，txt）")
         lines_btn.clicked.connect(self._on_open_lines)
         p3.addWidget(lines_btn)
         self._refresh_custom_list()
@@ -1074,32 +1096,38 @@ class SettingsPanel(QWidget):
         rule_btn_row.addWidget(del_rule_btn)
         p4.addLayout(rule_btn_row)
         self.rule_list = QListWidget()
-        self.rule_list.setMaximumHeight(100)
+        self.rule_list.setMaximumHeight(146)
+        self.rule_list.setWordWrap(True)
+        self.rule_list.setSpacing(2)
+        self.rule_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.rule_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.rule_list.setStyleSheet(LIST_QSS)
         self.rule_list.itemDoubleClicked.connect(lambda item: self._on_toggle_rule())
         p4.addWidget(self.rule_list)
-        rules_file_btn = QPushButton("编辑规则文件（txt，含概率说明）")
-        rules_file_btn.clicked.connect(self._on_open_rules)
-        reload_ext_btn = QPushButton("重新加载台词与规则")
-        reload_ext_btn.clicked.connect(self._on_reload_external)
-        drive_btn = QPushButton("美化磁盘图标（大肥鱼）")
-        drive_btn.clicked.connect(self.pet.beautify_drive_icons)
-        p4.addWidget(rules_file_btn)
-        p4.addWidget(reload_ext_btn)
-        p4.addWidget(drive_btn)
         self._refresh_rules()
 
-        update_btn = QPushButton("检查更新")
-        update_btn.clicked.connect(self._on_check_update)
-        custom_sound_btn = QPushButton("设置自定义音效")
-        custom_sound_btn.clicked.connect(self._on_custom_sound)
-        clear_sound_btn = QPushButton("清除自定义音效")
-        clear_sound_btn.clicked.connect(self._on_clear_sound)
-        open_log_btn = QPushButton("打开运行日志")
-        open_log_btn.clicked.connect(self._on_open_log)
-        p4.addWidget(update_btn)
-        p4.addWidget(custom_sound_btn)
-        p4.addWidget(clear_sound_btn)
-        p4.addWidget(open_log_btn)
+        # 系统操作按钮：两列网格，避免一排全宽按钮显得拥挤
+        sys_grid = QGridLayout()
+        sys_grid.setSpacing(8)
+        actions = (
+            ("编辑规则文件", self._on_open_rules, "plain"),
+            ("重新加载规则", self._on_reload_external, "plain"),
+            ("美化磁盘图标", self.pet.beautify_drive_icons, "plain"),
+            ("检查更新", self._on_check_update, "plain"),
+            ("设置自定义音效", self._on_custom_sound, "plain"),
+            ("清除自定义音效", self._on_clear_sound, "danger"),
+            ("打开运行日志", self._on_open_log, "plain"),
+        )
+        for i, (label, handler, style) in enumerate(actions):
+            btn = QPushButton(label)
+            btn.clicked.connect(handler)
+            if style == "danger":
+                btn.setObjectName("danger")
+            if i == len(actions) - 1:
+                sys_grid.addWidget(btn, i // 2, 0, 1, 2)     # 最后一个跨两列
+            else:
+                sys_grid.addWidget(btn, i // 2, i % 2)
+        p4.addLayout(sys_grid)
         p4.addStretch()
 
         self.tabs.addTab(page_interact, "互动")
@@ -1145,10 +1173,24 @@ class SettingsPanel(QWidget):
         self._hover_timer.start()
         self._open_time = time.monotonic()
 
+    def _can_autoclose(self):
+        """自动关闭保护：正在拖动控件 / 拖动桌宠 / 弹出菜单或对话框时不要关面板。"""
+        if getattr(self.pet, "_panel_lock", False):
+            return False
+        if QApplication.mouseButtons() != Qt.NoButton:
+            return False
+        if QApplication.activeModalWidget() is not None:
+            return False
+        if QApplication.activePopupWidget() is not None:
+            return False
+        return True
+
     def _check_hover(self):
         if not self.isVisible():
             return
         if time.monotonic() - self._open_time < 0.5:
+            return
+        if not self._can_autoclose():
             return
         pos = QCursor.pos()
         if not self.frameGeometry().contains(pos):
@@ -1168,7 +1210,7 @@ class SettingsPanel(QWidget):
         self.move(int(x), int(y))
 
     def changeEvent(self, event):
-        if event.type() == QEvent.WindowDeactivate:
+        if event.type() == QEvent.WindowDeactivate and self._can_autoclose():
             self.close()
         super().changeEvent(event)
 
@@ -1193,7 +1235,11 @@ class SettingsPanel(QWidget):
 
     def _on_size(self, val):
         self.size_value.setText(str(val))
-        self.pet.set_size_level(val)
+        # 拖动过程中不写配置、不移动面板（松手后统一保存并校正位置）
+        self.pet.set_size_level(val, save=False)
+
+    def _on_size_done(self):
+        self.pet.end_panel_lock()
 
     def _on_vol(self, val):
         self.vol_value.setText(f"{val}%")
@@ -1339,8 +1385,9 @@ class SettingsPanel(QWidget):
             if isinstance(rule, dict):
                 mark = "开" if rule.get("enabled", True) else "关"
                 chance = int(rule.get("chance", 100))
+                # 两行显示：状态 + 匹配词 + 概率 / 触发台词（不截断、不拥挤）
                 self.rule_list.addItem(
-                    f"[{mark}] {rule.get('match', '')} → {rule.get('text', '')}（{chance}%）")
+                    f"[{mark}] {rule.get('match', '')}　·　{chance}%\n{rule.get('text', '')}")
 
     def _on_add_rule(self):
         match = self.rule_match_edit.text().strip()
@@ -1398,6 +1445,7 @@ class PetWindow(QWidget):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAcceptDrops(True)          # 允许拖文件/文件夹进来喂食
 
         self.cfg = load_config()
         self.size_level = int(self.cfg.get("size_level", DEFAULT_SIZE_LEVEL))
@@ -1515,6 +1563,7 @@ class PetWindow(QWidget):
         self._sfx_pool = []
         self._sfx_seq = 0
         self._evade_tele_at = 0.0
+        self._panel_lock = False
         self.sounds = {}
         self._squish_anim = None
         self._fade_anim = None
@@ -1992,13 +2041,27 @@ class PetWindow(QWidget):
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def dropEvent(self, event):
         self._stop_wander()
         self._last_interact = time.monotonic()
+        handled = False
         for url in event.mimeData().urls():
             if url.isLocalFile():
                 self.feed_path(url.toLocalFile())
+                handled = True
+        if handled:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     # ---------- 系统能力 ----------
     def _log(self, msg):
@@ -2584,6 +2647,8 @@ class PetWindow(QWidget):
     def sync_settings_panel_position(self):
         if self.settings_panel is None or not self.settings_panel.isVisible():
             return
+        if getattr(self, "_panel_lock", False):
+            return          # 拖动大小滑块中：面板保持不动，防止滑块断触
         pw = self.settings_panel.width()
         ph = self.settings_panel.height()
         screen = QApplication.primaryScreen()
@@ -2610,11 +2675,21 @@ class PetWindow(QWidget):
         self.bubble.move(max(0, x), max(0, y))
 
     # ---------- 设置方法 ----------
-    def set_size_level(self, level):
+    def set_size_level(self, level, save=True):
         self.size_level = max(SIZE_MIN, min(SIZE_MAX, int(level)))
         self.size_px = size_level_to_px(self.size_level)
         self._apply_layout()
         self.apply_expression(self.expression, save=False, play_sound=False)
+        if save:
+            self.save()
+        self.sync_settings_panel_position()
+
+    def begin_panel_lock(self):
+        """拖动大小滑块期间冻结面板位置/自动关闭，避免滑块断触乱跳。"""
+        self._panel_lock = True
+
+    def end_panel_lock(self):
+        self._panel_lock = False
         self.save()
         self.sync_settings_panel_position()
 
