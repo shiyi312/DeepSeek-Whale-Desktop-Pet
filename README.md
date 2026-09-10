@@ -1,8 +1,8 @@
 # 🐳 DeepSeek 小鲸鱼桌宠（Whale Desktop Pet）
 
-![Python](https://img.shields.io/badge/Python-3.9+-blue) ![GUI](https://img.shields.io/badge/GUI-PyQt5-41b883) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078d6) ![Version](https://img.shields.io/badge/Version-v4.1.0-orange)
+![Python](https://img.shields.io/badge/Python-3.9+-blue) ![GUI](https://img.shields.io/badge/GUI-PyQt5-41b883) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078d6) ![Version](https://img.shields.io/badge/Version-v4.3.0-orange)
 
-**作者：shiyi312**　|　版本：`v4.1.0`　|　[开发者信息](#-开发者信息)
+**作者：shiyi312**　|　版本：`v4.3.0`　|　[开发者信息](#-开发者信息)
 
 ![DSH 小鲸鱼桌宠](assets/DSH2.png)
 
@@ -189,8 +189,8 @@ DeepSeek-Whale-Desktop-Pet/
 
 | 项 | 内容 |
 |---|---|
-| 作者 | DeepSeek-Whale-Desktop-Pet 团队 |
-| 版本 | v4.1.0 |
+| 作者 | shiyi312 |
+| 版本 | v4.3.0 |
 | QQ 交流群 | `254668799`（[点击搜索加群](https://qun.qq.com/qq/254668799)） |
 
 > 🐛 使用中遇到问题？欢迎加入 QQ 交流群 `254668799` 反馈 bug 或提出建议；

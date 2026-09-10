@@ -46,7 +46,7 @@ CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".dshw-desktop-pet.json")
 UPDATE_URL = "https://github.com/shiyi312/DeepSeek-Whale-Desktop-Pet"
 LOG_PATH = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "dshw-pet.log")
 
-LOCAL_VERSION = "4.1.0"
+LOCAL_VERSION = "4.3.0"
 LOG_KEEP = 100
 HUD_GAP = 2
 SFX_POOL_SIZE = 5
