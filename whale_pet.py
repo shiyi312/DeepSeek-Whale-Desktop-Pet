@@ -517,6 +517,17 @@ def autostart_command_matches():
     return os.path.normcase(reg.split('"')[0].strip()) == os.path.normcase(want.split('"')[0].strip())
 
 
+def clamp_to_screen(x, y, w, h, margin=4):
+    """把矩形限制在屏幕可用区域内，避免气泡/窗口被屏幕边缘截断。"""
+    screen = QApplication.primaryScreen()
+    if not screen:
+        return max(0, int(x)), max(0, int(y))
+    geo = screen.availableGeometry()
+    x = max(geo.left() + margin, min(int(x), geo.right() - w - margin))
+    y = max(geo.top() + margin, min(int(y), geo.bottom() - h - margin))
+    return int(x), int(y)
+
+
 class BubbleWidget(QWidget):
     """原版风格气泡：独立顶层窗口、圆角、尾巴、动态尺寸，不遮挡桌宠。"""
 
@@ -569,7 +580,8 @@ class BubbleWidget(QWidget):
             y = pet.y() - h - 8
             if y < 0:
                 y = pet.y() + pet.height() + 8
-            self.move(max(0, x), max(0, y))
+            x, y = clamp_to_screen(x, y, w, h)      # 左右上下都不越出屏幕
+            self.move(x, y)
 
         self.update()
         self.show()
@@ -3146,7 +3158,8 @@ class PetWindow(QWidget):
         y = self.y() - h - 8
         if y < 0:
             y = self.y() + self.height() + 8
-        self.bubble.move(max(0, x), max(0, y))
+        x, y = clamp_to_screen(x, y, w, h)          # 贴边时气泡不会被屏幕截断
+        self.bubble.move(x, y)
 
     # ---------- 设置方法 ----------
     def set_size_level(self, level, save=True):
