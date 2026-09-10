@@ -18,8 +18,8 @@ w.save_config = lambda cfg: None
 
 
 def hud_text(pet):
-    """把 HUD 分段拼成一行文本，便于断言。"""
-    return "".join(t for t, _ in pet.hud_card._parts())
+    """把 HUD 各行拼成文本，便于断言。"""
+    return "　".join("".join(t for t, _ in row) for row in pet.hud_card._rows())
 
 
 def main():
@@ -37,7 +37,11 @@ def main():
     assert "Token" in text, text
     assert re.search(r"\d{4}-\d{2}-\d{2} 周[一二三四五六日]", text), text
     assert re.search(r"\d{2}:\d{2}:\d{2}", text), text
-    print(f"1. 默认显示 OK → {text}")
+    rows = pet.hud_card._rows()
+    assert len(rows) == 2, ("Token 与时间应分成两行显示", rows)
+    assert "Token" in "".join(t for t, _ in rows[0]), rows[0]
+    assert re.search(r"\d{2}:\d{2}:\d{2}", "".join(t for t, _ in rows[1])), rows[1]
+    print(f"1. 默认显示 OK（两行）→ {text}")
 
     # 2) 只显示时间（关掉 Token）——时间与 Token 不绑定
     pet.set_hud_show_token(False)

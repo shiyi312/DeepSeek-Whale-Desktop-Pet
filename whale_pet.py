@@ -666,9 +666,9 @@ class HudCard(QWidget):
         f.setBold(True)
         return f
 
-    def _parts(self):
-        """返回 [(文本, 颜色), ...]：Token 段与时间/日期段互不绑定，谁空谁不画。"""
-        parts = []
+    def _rows(self):
+        """返回 [[(文本,颜色), ...], ...]：Token 一行、日期时间一行（竖排更好看）。"""
+        rows = []
         token = self.data.get("token")
         if token is not None:
             if self.abbrev:
@@ -676,27 +676,36 @@ class HudCard(QWidget):
             else:
                 num, unit = f"{int(token):,}", ""
             color = {"idle": self.NUM_IDLE, "gain": self.NUM_GAIN, "cost": self.NUM_COST}[self.tint]
-            parts.append(("Token：", self.PREFIX))
-            parts.append((num, color))
+            row = [("Token：", self.PREFIX), (num, color)]
             if unit:
-                parts.append((unit, self.PREFIX))
+                row.append((unit, self.PREFIX))
+            rows.append(row)
         date = str(self.data.get("date") or "")
         tm = str(self.data.get("time") or "")
         if date or tm:
             tcolor = self.THEMES.get(self.theme, self.THEMES["blue"])["time"]
-            if parts:
-                parts.append(("　　", tcolor))
+            row = []
             if date:
-                parts.append((date + "  ", tcolor))
+                row.append((date, tcolor))
             if tm:
-                parts.append((tm, tcolor))
-        return parts
+                row.append((("　" + tm) if date else tm, tcolor))
+            rows.append(row)
+        return rows
+
+    def row_count(self):
+        return len(self._rows())
+
+    def _parts(self):
+        """兼容旧接口：首行分段（测试与宽度估算用）。"""
+        rows = self._rows()
+        return rows[0] if rows else []
 
     def desired_width(self):
         f = self._font()
         fm = QFontMetrics(f)
-        total = sum(fm.horizontalAdvance(t) for t, _ in self._parts())
-        return total + 42
+        widest = max((sum(fm.horizontalAdvance(t) for t, _ in row)
+                      for row in self._rows()), default=0)
+        return widest + 42
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -711,18 +720,26 @@ class HudCard(QWidget):
         p.setBrush(QBrush(QColor(255, 255, 255, 238)))
         p.drawPath(body)
 
-        # 居中分段文字：Token：数量[单位]   时间
+        # 分行居中绘制：Token 一行、日期时间一行
+        rows = self._rows()
+        if not rows:
+            return
         f = self._font()
         p.setFont(f)
         fm = QFontMetrics(f)
-        parts = self._parts()
-        total = sum(fm.horizontalAdvance(t) for t, _ in parts)
-        x = r.center().x() - total / 2.0
-        baseline = r.top() + (r.height() - fm.height()) / 2.0 + fm.ascent()
-        for text, color in parts:
-            p.setPen(color)
-            p.drawText(QPointF(x, baseline), text)
-            x += fm.horizontalAdvance(text)
+        line_h = fm.height()
+        gap = 4
+        total_h = len(rows) * line_h + (len(rows) - 1) * gap
+        y = r.top() + (r.height() - total_h) / 2.0
+        for row in rows:
+            total_w = sum(fm.horizontalAdvance(t) for t, _ in row)
+            x = r.center().x() - total_w / 2.0
+            baseline = y + fm.ascent()
+            for text, color in row:
+                p.setPen(color)
+                p.drawText(QPointF(x, baseline), text)
+                x += fm.horizontalAdvance(text)
+            y += line_h + gap
 
 
 class SettingsTitleBar(QWidget):
@@ -1351,31 +1368,27 @@ class SettingsPanel(QWidget):
         root_layout.insertWidget(1, self.search_edit)     # 放在标题栏下方
         self._cards = self.findChildren(Card)
 
-        # 低分辨率屏幕才启用滚动区；高分辨率保持原来的样式
-        screen = QApplication.primaryScreen()
-        avail_h = screen.availableGeometry().height() if screen else 1080
-        need_h = self.sizeHint().height()
-        self.low_res_scroll = need_h > avail_h - 60
-        if self.low_res_scroll:
-            scroll = QScrollArea(self)
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QFrame.NoFrame)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            scroll.setStyleSheet(
-                "QScrollArea{background:transparent;border:none;}"
-                "QScrollBar:vertical{width:8px;background:transparent;margin:2px;}"
-                "QScrollBar::handle:vertical{background:rgba(148,163,184,0.55);border-radius:4px;}"
-                "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}")
-            card.setParent(None)
-            scroll.setWidget(card)
-            outer.addWidget(scroll)
-            self.setFixedHeight(min(need_h, max(360, avail_h - 60)))
-        else:
-            outer.addWidget(card)
+        # 统一用滚动容器包裹卡片：内容不超高时视觉与原来一致（无滚动条），
+        # 内容超出屏幕时自动限高可滚动（各页按自身内容定高，见 _fit_to_page）
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            "QScrollArea{background:transparent;border:none;}"
+            "QScrollBar:vertical{width:8px;background:transparent;margin:2px;}"
+            "QScrollBar::handle:vertical{background:rgba(148,163,184,0.55);border-radius:4px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}")
+        card.setParent(None)
+        scroll.setWidget(card)
+        outer.addWidget(scroll)
+        self.card = card                     # 供 _fit_to_page 计算内容高度
+        self.low_res_scroll = False
 
         self._hover_timer = QTimer(self)
         self._hover_timer.setInterval(150)
         self._hover_timer.timeout.connect(self.pet._guard("面板悬停", self._check_hover))
+        self._fit_to_page()          # 初始按当前页内容定高
         self._hover_timer.start()
         self._open_time = time.monotonic()
 
@@ -1437,9 +1450,28 @@ class SettingsPanel(QWidget):
             card.setVisible(not key or key in card.keywords.lower())
 
     def _on_tab_changed(self, index):
-        """记住上次所在的标签页。"""
+        """记住上次所在的标签页，并让面板高度贴合该页内容。"""
         self.pet.panel_tab = int(index)
         self.pet.save()
+        self._fit_to_page()
+
+    def _fit_to_page(self):
+        """面板高度 = 当前页内容高度（每页各自铺满、不留大片空白）；
+        若内容超过屏幕可用高度则限高，超出部分用滚动条查看。"""
+        page = self.tabs.currentWidget()
+        if page is None:
+            return
+        page_h = page.sizeHint().height()
+        bar_h = self.tabs.tabBar().sizeHint().height()
+        self.tabs.setFixedHeight(page_h + bar_h + 8)
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(16777215)
+        need = self.card.sizeHint().height() + 24      # 卡片内容 + 面板外边距
+        screen = QApplication.primaryScreen()
+        avail = screen.availableGeometry().height() if screen else 1080
+        limit = max(360, avail - 60)
+        self.low_res_scroll = need > limit
+        self.setFixedHeight(min(need, limit))
 
     def _row(self, widget, value_widget):
         row = QHBoxLayout()
@@ -2141,8 +2173,11 @@ class PetWindow(QWidget):
 
     # ---------- Token 趣味系统 ----------
     def _apply_layout(self):
-        # 鲸鱼娘同款白框比例：宽约角色 86%、高约角色 17%；与角色不重叠，避免挡字
-        card_h = max(38, round(self.size_px * 0.17))
+        # 卡片高度按"行数"自适应（Token 一行 / 日期时间一行），宽度按内容
+        font = self.hud_card._font()
+        fm = QFontMetrics(font)
+        rows = max(1, self.hud_card.row_count())
+        card_h = fm.height() * rows + 4 * (rows - 1) + 20
         card_w = max(round(self.size_px * 0.86), min(max(self.hud_card.desired_width(), 140), 480))
         win_w = max(self.size_px, card_w)
         has_content = bool(self._hud_parts())
@@ -2904,6 +2939,9 @@ class PetWindow(QWidget):
         if self._dragging and self._drag_pos is not None and event.buttons() & Qt.LeftButton:
             delta = event.globalPos() - self._drag_pos
             if delta.manhattanLength() > 3:
+                if not self._moved:
+                    # 一旦进入拖动，取消按压压扁，避免拖拽时图像变形（看起来像重影/断触）
+                    self._animate_squish(1.0, 1.0, 80)
                 self._moved = True
             nx, ny = self._clamp_pos(self.x() + delta.x(), self.y() + delta.y())
             self.move(nx, ny)
@@ -3490,7 +3528,16 @@ class PetWindow(QWidget):
             self.activateWindow()
 
 
+def enable_high_dpi():
+    """启用高 DPI 缩放（必须在 QApplication 创建前调用）。
+    否则在 125%/150% 缩放屏幕上，鼠标坐标（物理像素）与窗口移动（逻辑像素）
+    不一致，拖动会漂移、跳位甚至方向错乱（表现为"断触/重影"）。"""
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
+
 def main():
+    enable_high_dpi()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     install_excepthook()
