@@ -21,7 +21,7 @@ import urllib.request
 import webbrowser
 
 from PyQt5.QtCore import (
-    Qt, QEvent, QTimer, QUrl, QSize, QRect, QRectF, QPointF,
+    Qt, QEvent, QTimer, QUrl, QSize, QRect, QRectF, QPointF, QObject,
     QPropertyAnimation, QEasingCurve, QLockFile, pyqtSignal, QVariantAnimation
 )
 from PyQt5.QtGui import (
@@ -517,6 +517,29 @@ def autostart_command_matches():
     return os.path.normcase(reg.split('"')[0].strip()) == os.path.normcase(want.split('"')[0].strip())
 
 
+class NoWheelSlider(QSlider):
+    """不响应鼠标滚轮的滑块：避免在面板上滚动时误改设置值。"""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelComboBox(QComboBox):
+    """不响应鼠标滚轮的下拉框：避免滚动时误切换选项（表情/音效/颜色等）。"""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class WheelBlocker(QObject):
+    """吃掉滚轮事件：用于标签栏等本不该被滚轮改变状态的控件。"""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Wheel:
+            return True
+        return super().eventFilter(obj, event)
+
+
 def clamp_to_screen(x, y, w, h, margin=4):
     """把矩形限制在屏幕可用区域内，避免气泡/窗口被屏幕边缘截断。"""
     screen = QApplication.primaryScreen()
@@ -964,7 +987,7 @@ class SettingsPanel(QWidget):
         p1 = QVBoxLayout(page_interact)
         p1.setSpacing(12)
 
-        self.expr_combo = QComboBox()
+        self.expr_combo = NoWheelComboBox()
         for e in pet.expressions:
             self.expr_combo.addItem(e["display"], e["name"])
         idx = self.expr_combo.findData(pet.expression)
@@ -972,13 +995,13 @@ class SettingsPanel(QWidget):
             self.expr_combo.setCurrentIndex(idx)
         self.expr_combo.currentIndexChanged.connect(self._ok(self._on_expr))
 
-        self.click_rotate_slider = QSlider(Qt.Horizontal)
+        self.click_rotate_slider = NoWheelSlider(Qt.Horizontal)
         self.click_rotate_slider.setRange(1, 100)
         self.click_rotate_slider.setValue(pet.click_rotate_count)
         self.click_rotate_value = QLabel(f"{pet.click_rotate_count} 下")
         self.click_rotate_slider.valueChanged.connect(self._ok(self._on_click_rotate))
 
-        self.size_slider = QSlider(Qt.Horizontal)
+        self.size_slider = NoWheelSlider(Qt.Horizontal)
         self.size_slider.setRange(SIZE_MIN, SIZE_MAX)
         self.size_slider.setValue(pet.size_level)
         self.size_value = QLabel(str(pet.size_level))
@@ -996,13 +1019,13 @@ class SettingsPanel(QWidget):
         card_look.add_layout(self._row(self.size_slider, self.size_value))
         p1.addWidget(card_look)
 
-        self.vol_slider = QSlider(Qt.Horizontal)
+        self.vol_slider = NoWheelSlider(Qt.Horizontal)
         self.vol_slider.setRange(0, 100)
         self.vol_slider.setValue(pet.volume)
         self.vol_value = QLabel(f"{pet.volume}%")
         self.vol_slider.valueChanged.connect(self._ok(self._on_vol))
 
-        self.sound_combo = QComboBox()
+        self.sound_combo = NoWheelComboBox()
         self.sound_combo.addItem("小黄鸭", "duck")
         self.sound_combo.addItem("音效1", "fx1")
         for mode in pet.sounds:
@@ -1041,7 +1064,7 @@ class SettingsPanel(QWidget):
                             "「躲避触发距离」= 鼠标离多近开始逃跑")
         card_act.add_checks([self.follow_check, self.evade_check, self.wander_check])
         card_act.add(QLabel("漫游启动延迟"))
-        self.wander_delay_slider = QSlider(Qt.Horizontal)
+        self.wander_delay_slider = NoWheelSlider(Qt.Horizontal)
         self.wander_delay_slider.setRange(0, 600)
         self.wander_delay_slider.setValue(pet.wander_delay)
         self.wander_delay_value = QLabel("不自动漫游" if pet.wander_delay == 0
@@ -1049,7 +1072,7 @@ class SettingsPanel(QWidget):
         self.wander_delay_slider.valueChanged.connect(self._ok(self._on_wander_delay))
         card_act.add_layout(self._row(self.wander_delay_slider, self.wander_delay_value))
         card_act.add(QLabel("躲避触发距离"))
-        self.evade_range_slider = QSlider(Qt.Horizontal)
+        self.evade_range_slider = NoWheelSlider(Qt.Horizontal)
         self.evade_range_slider.setRange(100, 1500)
         self.evade_range_slider.setValue(pet.evade_range)
         self.evade_range_value = QLabel(f"{pet.evade_range}px")
@@ -1136,7 +1159,7 @@ class SettingsPanel(QWidget):
         page_bubble = QWidget()
         p3 = QVBoxLayout(page_bubble)
         p3.setSpacing(12)
-        self.line_mode = QComboBox()
+        self.line_mode = NoWheelComboBox()
         self.line_mode.addItem("今日心情", "mood")
         self.line_mode.addItem("随机台词", "random")
         self.line_mode.addItem("自定义台词", "custom")
@@ -1183,12 +1206,12 @@ class SettingsPanel(QWidget):
         self.bubble_check = QCheckBox("显示气泡")
         self.bubble_check.setChecked(pet.bubble_on)
         self.bubble_check.toggled.connect(self._ok(self._on_bubble))
-        self.auto_close_slider = QSlider(Qt.Horizontal)
+        self.auto_close_slider = NoWheelSlider(Qt.Horizontal)
         self.auto_close_slider.setRange(1, 10)
         self.auto_close_slider.setValue(max(1, pet.bubble_close_sec))
         self.auto_close_value = QLabel(f"{pet.bubble_close_sec}秒")
         self.auto_close_slider.valueChanged.connect(self._ok(self._on_bubble_close))
-        self.color_combo = QComboBox()
+        self.color_combo = NoWheelComboBox()
         self.color_combo.addItem("蓝色", "blue")
         self.color_combo.addItem("粉色", "pink")
         self.color_combo.addItem("深色", "dark")
@@ -1215,17 +1238,17 @@ class SettingsPanel(QWidget):
         card_bubble.add_layout(self._row(self.auto_close_slider, self.auto_close_value))
         p3.addWidget(card_bubble)
 
-        self.bubble_font_slider = QSlider(Qt.Horizontal)
+        self.bubble_font_slider = NoWheelSlider(Qt.Horizontal)
         self.bubble_font_slider.setRange(10, 24)
         self.bubble_font_slider.setValue(pet.bubble_font_size)
         self.bubble_font_value = QLabel(f"{pet.bubble_font_size}px")
         self.bubble_font_slider.valueChanged.connect(self._ok(self._on_bubble_font))
-        self.bubble_scale_slider = QSlider(Qt.Horizontal)
+        self.bubble_scale_slider = NoWheelSlider(Qt.Horizontal)
         self.bubble_scale_slider.setRange(70, 140)
         self.bubble_scale_slider.setValue(int(pet.bubble_scale * 100))
         self.bubble_scale_value = QLabel(f"{int(pet.bubble_scale * 100)}%")
         self.bubble_scale_slider.valueChanged.connect(self._ok(self._on_bubble_scale))
-        self.bubble_freq_slider = QSlider(Qt.Horizontal)
+        self.bubble_freq_slider = NoWheelSlider(Qt.Horizontal)
         self.bubble_freq_slider.setRange(1, 100)
         self.bubble_freq_slider.setValue(pet.bubble_freq)
         self.bubble_freq_value = QLabel(f"{pet.bubble_freq}%")
@@ -1249,7 +1272,7 @@ class SettingsPanel(QWidget):
         self.auto_rotate_check = QCheckBox("自动轮换表情")
         self.auto_rotate_check.setChecked(pet.auto_rotate)
         self.auto_rotate_check.toggled.connect(self._ok(self._on_auto_rotate_setting))
-        self.auto_rotate_interval_slider = QSlider(Qt.Horizontal)
+        self.auto_rotate_interval_slider = NoWheelSlider(Qt.Horizontal)
         self.auto_rotate_interval_slider.setRange(5, 100)
         self.auto_rotate_interval_slider.setValue(pet.auto_rotate_interval)
         self.auto_rotate_interval_value = QLabel(f"{pet.auto_rotate_interval} 秒")
@@ -1260,7 +1283,7 @@ class SettingsPanel(QWidget):
         self.blink_check = QCheckBox("空闲自动眨眼")
         self.blink_check.setChecked(pet.blink_enabled)
         self.blink_check.toggled.connect(self._ok(self._on_blink))
-        self.blink_slider = QSlider(Qt.Horizontal)
+        self.blink_slider = NoWheelSlider(Qt.Horizontal)
         self.blink_slider.setRange(5, 120)
         self.blink_slider.setValue(pet.blink_interval)
         self.blink_value = QLabel(f"{pet.blink_interval}秒")
@@ -1315,7 +1338,7 @@ class SettingsPanel(QWidget):
         card_monitor.add_layout(rule_btn_row)
         card_monitor.add(self.rule_list)
         card_monitor.add(QLabel("触发冷却"))
-        self.cooldown_slider = QSlider(Qt.Horizontal)
+        self.cooldown_slider = NoWheelSlider(Qt.Horizontal)
         self.cooldown_slider.setRange(0, 600)
         self.cooldown_slider.setValue(pet.app_rule_cooldown)
         self.cooldown_value = QLabel("每次打开都触发" if pet.app_rule_cooldown == 0
@@ -1375,6 +1398,9 @@ class SettingsPanel(QWidget):
         self.tabs.addTab(page_bubble, "气泡")
         self.tabs.addTab(page_system, "系统")
         self.tabs.currentChanged.connect(self._ok(self._on_tab_changed))
+        # 标签栏不吃滚轮（否则在面板上滚动会误切换标签页）
+        self._wheel_blocker = WheelBlocker(self)
+        self.tabs.tabBar().installEventFilter(self._wheel_blocker)
 
         # 搜索框：过滤卡片（匹配卡片标题/说明/内部控件文字）
         self.search_edit = QLineEdit()
