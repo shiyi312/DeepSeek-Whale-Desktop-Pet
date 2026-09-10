@@ -46,7 +46,7 @@ CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".dshw-desktop-pet.json")
 UPDATE_URL = "https://github.com/shiyi312/DeepSeek-Whale-Desktop-Pet"
 LOG_PATH = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "dshw-pet.log")
 
-LOCAL_VERSION = "4.3.0"
+LOCAL_VERSION = "4.4.0"
 LOG_KEEP = 100
 HUD_GAP = 2
 SFX_POOL_SIZE = 5
@@ -731,7 +731,72 @@ class SettingsTitleBar(QWidget):
 
     def mouseReleaseEvent(self, event):
         self._drag_pos = None
+        if hasattr(self.panel, "pet"):
+            self.panel.pet.remember_panel_geometry(self.panel)   # 记住位置，之后不再跟随桌宠
         event.accept()
+
+
+class Card(QFrame):
+    """设置面板分区卡片：标题 + 说明 + 可选「?」提示 + 内容区。"""
+
+    def __init__(self, title, desc="", tip="", parent=None):
+        super().__init__(parent)
+        self.setObjectName("card")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 14)
+        lay.setSpacing(9)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        t = QLabel(title)
+        t.setObjectName("cardTitle")
+        head.addWidget(t)
+        head.addStretch()
+        if tip:
+            q = QLabel("?")
+            q.setObjectName("cardTip")
+            q.setToolTip(tip)
+            q.setFixedSize(20, 20)
+            q.setAlignment(Qt.AlignCenter)
+            head.addWidget(q)
+        lay.addLayout(head)
+        if desc:
+            d = QLabel(desc)
+            d.setObjectName("cardDesc")
+            d.setWordWrap(True)
+            lay.addWidget(d)
+        self.body = QVBoxLayout()
+        self.body.setSpacing(9)
+        lay.addLayout(self.body)
+        self.keywords = f"{title} {desc} {tip}"
+
+    def add(self, widget):
+        self.body.addWidget(widget)
+        self.keywords += " " + getattr(widget, "text", lambda: "")()
+        return widget
+
+    def add_layout(self, layout):
+        self.body.addLayout(layout)
+        return layout
+
+    def add_checks(self, checks, cols=2):
+        """复选框两列紧凑排布（内容自适应）。"""
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
+        for i, c in enumerate(checks):
+            grid.addWidget(c, i // cols, i % cols)
+            grid.setColumnStretch(i % cols, 1)
+            self.keywords += " " + c.text()
+        self.body.addLayout(grid)
+        return grid
+
+    def add_row(self, *widgets):
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        for wgt in widgets:
+            row.addWidget(wgt)
+        self.body.addLayout(row)
+        return row
 
 
 class SettingsPanel(QWidget):
@@ -756,6 +821,12 @@ class SettingsPanel(QWidget):
             QLabel { color: #f8fafc; font-size: 16px; }
             QLabel#title { font-size: 24px; font-weight: 800; color: #22d3ee; }
             QLabel#section { font-size: 15px; color: #a5b4fc; font-weight: 700; margin-top: 8px; }
+            QFrame#card { background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(148,163,184,0.22); border-radius: 14px; }
+            QLabel#cardTitle { font-size: 16px; font-weight: 800; color: #67e8f9; }
+            QLabel#cardDesc { font-size: 13px; color: #94a3b8; }
+            QLabel#cardTip { background: rgba(148,163,184,0.30); border-radius: 10px;
+                color: #e2e8f0; font-size: 13px; font-weight: 800; }
             QLabel#tokenLabel { color: #fbbf24; font-size: 16px; font-weight: 700; }
             QComboBox, QLineEdit {
                 background: rgba(255,255,255,0.10); border: 1.5px solid rgba(255,255,255,0.22);
@@ -820,9 +891,8 @@ class SettingsPanel(QWidget):
         # ============ 互动页 ============
         page_interact = QWidget()
         p1 = QVBoxLayout(page_interact)
-        p1.setSpacing(8)
+        p1.setSpacing(12)
 
-        p1.addWidget(self._section("表情"))
         self.expr_combo = QComboBox()
         for e in pet.expressions:
             self.expr_combo.addItem(e["display"], e["name"])
@@ -830,17 +900,13 @@ class SettingsPanel(QWidget):
         if idx >= 0:
             self.expr_combo.setCurrentIndex(idx)
         self.expr_combo.currentIndexChanged.connect(self._on_expr)
-        p1.addWidget(self.expr_combo)
 
-        p1.addWidget(self._section("连点换表情"))
         self.click_rotate_slider = QSlider(Qt.Horizontal)
         self.click_rotate_slider.setRange(1, 100)
         self.click_rotate_slider.setValue(pet.click_rotate_count)
         self.click_rotate_value = QLabel(f"{pet.click_rotate_count} 下")
         self.click_rotate_slider.valueChanged.connect(self._on_click_rotate)
-        p1.addLayout(self._row(self.click_rotate_slider, self.click_rotate_value))
 
-        p1.addWidget(self._section("大小"))
         self.size_slider = QSlider(Qt.Horizontal)
         self.size_slider.setRange(SIZE_MIN, SIZE_MAX)
         self.size_slider.setValue(pet.size_level)
@@ -848,17 +914,23 @@ class SettingsPanel(QWidget):
         self.size_slider.valueChanged.connect(self._on_size)
         self.size_slider.sliderPressed.connect(pet.begin_panel_lock)
         self.size_slider.sliderReleased.connect(self._on_size_done)
-        p1.addLayout(self._row(self.size_slider, self.size_value))
 
-        p1.addWidget(self._section("音量"))
+        card_look = Card("🎨 外观", "表情、连点换表情次数与角色大小",
+                         tip="连点换表情：连续点击这么多次后换下一个表情（1~100）\n"
+                             "大小：档位 1~20，对应 0.6~2.5 倍")
+        card_look.add(self.expr_combo)
+        card_look.add(QLabel("连点换表情"))
+        card_look.add_layout(self._row(self.click_rotate_slider, self.click_rotate_value))
+        card_look.add(QLabel("大小"))
+        card_look.add_layout(self._row(self.size_slider, self.size_value))
+        p1.addWidget(card_look)
+
         self.vol_slider = QSlider(Qt.Horizontal)
         self.vol_slider.setRange(0, 100)
         self.vol_slider.setValue(pet.volume)
         self.vol_value = QLabel(f"{pet.volume}%")
         self.vol_slider.valueChanged.connect(self._on_vol)
-        p1.addLayout(self._row(self.vol_slider, self.vol_value))
 
-        p1.addWidget(self._section("音效"))
         self.sound_combo = QComboBox()
         self.sound_combo.addItem("小黄鸭", "duck")
         self.sound_combo.addItem("音效1", "fx1")
@@ -869,13 +941,18 @@ class SettingsPanel(QWidget):
         if idx >= 0:
             self.sound_combo.setCurrentIndex(idx)
         self.sound_combo.currentIndexChanged.connect(self._on_sound_mode)
-        p1.addWidget(self.sound_combo)
         self.sound_check = QCheckBox("启用音效")
         self.sound_check.setChecked(pet.sound_enabled)
         self.sound_check.toggled.connect(self._on_sound)
-        p1.addWidget(self.sound_check)
 
-        p1.addWidget(self._section("互动玩法"))
+        card_sound = Card("🔊 声音", "音效开关、音效选择与音量",
+                          tip="音效文件放在程序 sounds 目录里即可出现在列表中")
+        card_sound.add(self.sound_combo)
+        card_sound.add(self.sound_check)
+        card_sound.add(QLabel("音量"))
+        card_sound.add_layout(self._row(self.vol_slider, self.vol_value))
+        p1.addWidget(card_sound)
+
         self.follow_check = QCheckBox("鼠标跟随")
         self.follow_check.setChecked(pet.follow_mode)
         self.follow_check.toggled.connect(self._on_follow_mode)
@@ -885,11 +962,13 @@ class SettingsPanel(QWidget):
         self.wander_check = QCheckBox("待机漫游")
         self.wander_check.setChecked(pet.wander_mode)
         self.wander_check.toggled.connect(self._on_wander_mode)
-        p1.addWidget(self.follow_check)
-        p1.addWidget(self.evade_check)
-        p1.addWidget(self.wander_check)
 
-        p1.addWidget(self._section("窗口"))
+        card_act = Card("🕹️ 行为", "怎么动由你决定",
+                        tip="跟随与躲避互斥（同时只会生效一个）；\n"
+                            "待机漫游可以和躲避共存，久无操作时自己散步")
+        card_act.add_checks([self.follow_check, self.evade_check, self.wander_check])
+        p1.addWidget(card_act)
+
         self.mirror_check = QCheckBox("贴边自动镜像")
         self.mirror_check.setChecked(pet.auto_mirror)
         self.mirror_check.toggled.connect(self._on_mirror)
@@ -899,35 +978,33 @@ class SettingsPanel(QWidget):
         self.top_check = QCheckBox("始终置顶")
         self.top_check.setChecked(pet.always_on_top)
         self.top_check.toggled.connect(self._on_top)
-        p1.addWidget(self.mirror_check)
-        p1.addWidget(self.lock_check)
         self.snap_check = QCheckBox("拖拽吸附屏幕边缘")
         self.snap_check.setChecked(pet.snap_enabled)
         self.snap_check.toggled.connect(self._on_snap)
-        p1.addWidget(self.snap_check)
-        p1.addWidget(self.top_check)
+
+        card_win = Card("🪟 窗口", "贴边、置顶与拖拽行为",
+                        tip="贴边自动镜像：贴到屏幕左边缘时水平翻转（面朝屏内）\n"
+                            "拖拽吸附边缘：松手时中心落在屏幕某侧 1/4 区域即贴边")
+        card_win.add_checks([self.mirror_check, self.snap_check,
+                             self.lock_check, self.top_check])
+        p1.addWidget(card_win)
         p1.addStretch()
 
         # ============ Token 页 ============
         page_token = QWidget()
         p2 = QVBoxLayout(page_token)
-        p2.setSpacing(8)
-        p2.addWidget(self._section("Token 系统"))
+        p2.setSpacing(12)
         self.token_check = QCheckBox("开启 Token 系统")
         self.token_check.setChecked(pet.token_enabled)
         self.token_check.toggled.connect(self._on_token_enabled)
-        p2.addWidget(self.token_check)
         self.hud_check = QCheckBox("显示 Token HUD（桌宠下方）")
         self.hud_check.setChecked(pet.hud_visible)
         self.hud_check.toggled.connect(self._on_hud_visible)
-        p2.addWidget(self.hud_check)
         self.hud_abbrev_check = QCheckBox("HUD 数字缩写（如 388.4W）")
         self.hud_abbrev_check.setChecked(pet.hud_abbrev)
         self.hud_abbrev_check.toggled.connect(self._on_hud_abbrev)
-        p2.addWidget(self.hud_abbrev_check)
         self.token_label = QLabel(f"当前 Token：{pet.token:,}")
         self.token_label.setObjectName("tokenLabel")
-        p2.addWidget(self.token_label)
         token_row = QHBoxLayout()
         add_btn = QPushButton("+520W Token")
         add_btn.clicked.connect(self._on_add_tokens)
@@ -936,14 +1013,25 @@ class SettingsPanel(QWidget):
         clear_btn.clicked.connect(self._on_clear_tokens)
         token_row.addWidget(add_btn)
         token_row.addWidget(clear_btn)
-        p2.addLayout(token_row)
+
+        card_token = Card("💰 趣味 Token", "点击/喂食消耗，可随时充值或清空",
+                          tip="关闭 Token 系统后不影响互动与喂食，只是不再计数；\n"
+                              "拖文件到桌宠身上也能喂食（会真实删除文件）")
+        card_token.add(self.token_check)
+        card_token.add(self.token_label)
+        card_token.add_layout(token_row)
+        p2.addWidget(card_token)
+
+        card_hud = Card("🧾 HUD 显示", "桌宠下方的 Token / 时间显示",
+                        tip="HUD 显示在角色下方，不遮挡角色；数字缩写示例：388.4W")
+        card_hud.add_checks([self.hud_check, self.hud_abbrev_check])
+        p2.addWidget(card_hud)
         p2.addStretch()
 
         # ============ 气泡页 ============
         page_bubble = QWidget()
         p3 = QVBoxLayout(page_bubble)
-        p3.setSpacing(8)
-        p3.addWidget(self._section("台词"))
+        p3.setSpacing(12)
         self.line_mode = QComboBox()
         self.line_mode.addItem("今日心情", "mood")
         self.line_mode.addItem("随机台词", "random")
@@ -973,27 +1061,29 @@ class SettingsPanel(QWidget):
         delete_btn = QPushButton("删除选中台词")
         delete_btn.setObjectName("danger")
         delete_btn.clicked.connect(self._on_delete_custom)
-        p3.addWidget(self.custom_empty)
-        p3.addWidget(self.custom_list)
-        p3.addWidget(add_btn)
-        p3.addWidget(delete_btn)
         lines_btn = QPushButton("编辑台词文件（每行一句，txt）")
         lines_btn.clicked.connect(self._on_open_lines)
-        p3.addWidget(lines_btn)
+
+        card_line = Card("💬 台词", "决定她说什么",
+                         tip="今日心情 / 随机台词 / 自定义台词 / 固定台词 四种模式\n"
+                             "自定义台词也可以直接在 .dshw-pet-lines.txt 里一行一句地写")
+        card_line.add(self.line_mode)
+        card_line.add(self.custom_line_edit)
+        card_line.add(self.custom_empty)
+        card_line.add(self.custom_list)
+        card_line.add_row(add_btn, delete_btn)
+        card_line.add(lines_btn)
+        p3.addWidget(card_line)
         self._refresh_custom_list()
 
-        p3.addWidget(self._section("气泡"))
         self.bubble_check = QCheckBox("显示气泡")
         self.bubble_check.setChecked(pet.bubble_on)
         self.bubble_check.toggled.connect(self._on_bubble)
-        p3.addWidget(self.bubble_check)
         self.auto_close_slider = QSlider(Qt.Horizontal)
         self.auto_close_slider.setRange(1, 10)
         self.auto_close_slider.setValue(max(1, pet.bubble_close_sec))
         self.auto_close_value = QLabel(f"{pet.bubble_close_sec}秒")
         self.auto_close_slider.valueChanged.connect(self._on_bubble_close)
-        p3.addWidget(self._section("气泡关闭时间"))
-        p3.addLayout(self._row(self.auto_close_slider, self.auto_close_value))
         self.color_combo = QComboBox()
         self.color_combo.addItem("蓝色", "blue")
         self.color_combo.addItem("粉色", "pink")
@@ -1003,48 +1093,55 @@ class SettingsPanel(QWidget):
         if idx >= 0:
             self.color_combo.setCurrentIndex(idx)
         self.color_combo.currentIndexChanged.connect(self._on_bubble_color)
-        p3.addWidget(self._section("气泡颜色"))
-        p3.addWidget(self.color_combo)
-
         self.show_time_check = QCheckBox("显示当前时间")
         self.show_time_check.setChecked(pet.show_time)
         self.show_time_check.toggled.connect(self._on_show_time)
         self.show_greeting_check = QCheckBox("时间问候")
         self.show_greeting_check.setChecked(pet.show_greeting)
         self.show_greeting_check.toggled.connect(self._on_show_greeting)
-        p3.addWidget(self.show_time_check)
-        p3.addWidget(self.show_greeting_check)
 
-        p3.addWidget(self._section("气泡字号"))
+        card_bubble = Card("🫧 气泡", "气泡开关、外观与出现频率",
+                           tip="气泡颜色同时决定 HUD 卡片描边主题；\n"
+                               "对话频率控制点击时弹出台词的几率")
+        card_bubble.add(self.bubble_check)
+        card_bubble.add_checks([self.show_time_check, self.show_greeting_check])
+        card_bubble.add(QLabel("气泡颜色"))
+        card_bubble.add(self.color_combo)
+        card_bubble.add(QLabel("关闭时间"))
+        card_bubble.add_layout(self._row(self.auto_close_slider, self.auto_close_value))
+        p3.addWidget(card_bubble)
+
         self.bubble_font_slider = QSlider(Qt.Horizontal)
         self.bubble_font_slider.setRange(10, 24)
         self.bubble_font_slider.setValue(pet.bubble_font_size)
         self.bubble_font_value = QLabel(f"{pet.bubble_font_size}px")
         self.bubble_font_slider.valueChanged.connect(self._on_bubble_font)
-        p3.addLayout(self._row(self.bubble_font_slider, self.bubble_font_value))
-
-        p3.addWidget(self._section("气泡框大小"))
         self.bubble_scale_slider = QSlider(Qt.Horizontal)
         self.bubble_scale_slider.setRange(70, 140)
         self.bubble_scale_slider.setValue(int(pet.bubble_scale * 100))
         self.bubble_scale_value = QLabel(f"{int(pet.bubble_scale * 100)}%")
         self.bubble_scale_slider.valueChanged.connect(self._on_bubble_scale)
-        p3.addLayout(self._row(self.bubble_scale_slider, self.bubble_scale_value))
-
-        p3.addWidget(self._section("对话频率"))
         self.bubble_freq_slider = QSlider(Qt.Horizontal)
         self.bubble_freq_slider.setRange(1, 100)
         self.bubble_freq_slider.setValue(pet.bubble_freq)
         self.bubble_freq_value = QLabel(f"{pet.bubble_freq}%")
         self.bubble_freq_slider.valueChanged.connect(self._on_bubble_freq)
-        p3.addLayout(self._row(self.bubble_freq_slider, self.bubble_freq_value))
+
+        card_bubble_style = Card("🎚️ 气泡外观", "字号、框大小与出现频率",
+                                 tip="框大小 100% 为默认；字号 10~24px")
+        card_bubble_style.add(QLabel("字号"))
+        card_bubble_style.add_layout(self._row(self.bubble_font_slider, self.bubble_font_value))
+        card_bubble_style.add(QLabel("框大小"))
+        card_bubble_style.add_layout(self._row(self.bubble_scale_slider, self.bubble_scale_value))
+        card_bubble_style.add(QLabel("对话频率"))
+        card_bubble_style.add_layout(self._row(self.bubble_freq_slider, self.bubble_freq_value))
+        p3.addWidget(card_bubble_style)
         p3.addStretch()
 
         # ============ 系统页 ============
         page_system = QWidget()
         p4 = QVBoxLayout(page_system)
-        p4.setSpacing(8)
-        p4.addWidget(self._section("自动动画"))
+        p4.setSpacing(12)
         self.auto_rotate_check = QCheckBox("自动轮换表情")
         self.auto_rotate_check.setChecked(pet.auto_rotate)
         self.auto_rotate_check.toggled.connect(self._on_auto_rotate_setting)
@@ -1053,7 +1150,6 @@ class SettingsPanel(QWidget):
         self.auto_rotate_interval_slider.setValue(pet.auto_rotate_interval)
         self.auto_rotate_interval_value = QLabel(f"{pet.auto_rotate_interval} 秒")
         self.auto_rotate_interval_slider.valueChanged.connect(self._on_auto_rotate_interval)
-        p4.addLayout(self._row(self.auto_rotate_interval_slider, self.auto_rotate_interval_value))
         self.idle_anim_check = QCheckBox("空闲自动表情动画")
         self.idle_anim_check.setChecked(pet.auto_emotion)
         self.idle_anim_check.toggled.connect(self._on_auto_emotion)
@@ -1065,28 +1161,24 @@ class SettingsPanel(QWidget):
         self.blink_slider.setValue(pet.blink_interval)
         self.blink_value = QLabel(f"{pet.blink_interval}秒")
         self.blink_slider.valueChanged.connect(self._on_blink_interval)
-        p4.addWidget(self.auto_rotate_check)
-        p4.addWidget(self.idle_anim_check)
-        p4.addWidget(self.blink_check)
-        p4.addLayout(self._row(self.blink_slider, self.blink_value))
 
-        p4.addWidget(self._section("系统"))
-        self.autostart_check = QCheckBox("开机自启")
-        self.autostart_check.setChecked(is_autostart_enabled())
-        self.autostart_check.toggled.connect(self._on_autostart)
-        p4.addWidget(self.autostart_check)
+        card_anim = Card("🎬 自动动画", "不用管她时她自己会有的小动作",
+                         tip="自动轮换：每隔设定秒数换一个表情\n"
+                             "空闲动画：长时间没互动时做表情变化；眨眼按间隔随机眨")
+        card_anim.add(QLabel("轮换间隔"))
+        card_anim.add_layout(self._row(self.auto_rotate_interval_slider, self.auto_rotate_interval_value))
+        card_anim.add_checks([self.auto_rotate_check, self.idle_anim_check, self.blink_check])
+        card_anim.add(QLabel("眨眼间隔"))
+        card_anim.add_layout(self._row(self.blink_slider, self.blink_value))
+        p4.addWidget(card_anim)
 
-        p4.addWidget(self._section("应用打开监控"))
         self.monitor_check = QCheckBox("开启应用打开监控")
         self.monitor_check.setChecked(pet.app_monitor_enabled)
         self.monitor_check.toggled.connect(self._on_app_monitor)
-        p4.addWidget(self.monitor_check)
         self.rule_match_edit = QLineEdit()
         self.rule_match_edit.setPlaceholderText("匹配词：进程名/窗口标题，如 steam")
         self.rule_text_edit = QLineEdit()
         self.rule_text_edit.setPlaceholderText("触发台词，如：又在打游戏啦？")
-        p4.addWidget(self.rule_match_edit)
-        p4.addWidget(self.rule_text_edit)
         rule_btn_row = QHBoxLayout()
         add_rule_btn = QPushButton("添加规则")
         add_rule_btn.clicked.connect(self._on_add_rule)
@@ -1098,7 +1190,6 @@ class SettingsPanel(QWidget):
         rule_btn_row.addWidget(add_rule_btn)
         rule_btn_row.addWidget(toggle_rule_btn)
         rule_btn_row.addWidget(del_rule_btn)
-        p4.addLayout(rule_btn_row)
         self.rule_list = QListWidget()
         self.rule_list.setMaximumHeight(146)
         self.rule_list.setWordWrap(True)
@@ -1107,15 +1198,33 @@ class SettingsPanel(QWidget):
         self.rule_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.rule_list.setStyleSheet(LIST_QSS)
         self.rule_list.itemDoubleClicked.connect(lambda item: self._on_toggle_rule())
-        p4.addWidget(self.rule_list)
+
+        card_monitor = Card("🖥️ 应用打开监控", "打开指定软件时让她说一句",
+                            tip="每行规则格式：匹配词 | 台词 | 触发概率 | 启用\n"
+                                "触发概率 0~100（如 30 表示 30% 几率）；同一应用 5 分钟内只说一次\n"
+                                "也可以直接编辑 .dshw-pet-rules.txt（文件内有详细说明）")
+        card_monitor.add(self.monitor_check)
+        card_monitor.add(self.rule_match_edit)
+        card_monitor.add(self.rule_text_edit)
+        card_monitor.add_layout(rule_btn_row)
+        card_monitor.add(self.rule_list)
+        card_monitor.add_row(self._plain_btn("编辑规则文件", self._on_open_rules),
+                             self._plain_btn("重新加载规则", self._on_reload_external))
+        p4.addWidget(card_monitor)
         self._refresh_rules()
 
+        self.autostart_check = QCheckBox("开机自启")
+        self.autostart_check.setChecked(is_autostart_enabled())
+        self.autostart_check.toggled.connect(self._on_autostart)
+
+        card_tools = Card("🛠️ 系统与工具", "开机自启、更新、音效与磁盘图标",
+                          tip="开机自启会随系统启动并自动修正失效路径；\n"
+                              "美化磁盘图标需要以管理员身份运行才生效")
+        card_tools.add(self.autostart_check)
         # 系统操作按钮：两列网格，避免一排全宽按钮显得拥挤
         sys_grid = QGridLayout()
         sys_grid.setSpacing(8)
         actions = (
-            ("编辑规则文件", self._on_open_rules, "plain"),
-            ("重新加载规则", self._on_reload_external, "plain"),
             ("美化磁盘图标", self.pet.beautify_drive_icons, "plain"),
             ("检查更新", self._on_check_update, "plain"),
             ("设置自定义音效", self._on_custom_sound, "plain"),
@@ -1131,23 +1240,35 @@ class SettingsPanel(QWidget):
                 sys_grid.addWidget(btn, i // 2, 0, 1, 2)     # 最后一个跨两列
             else:
                 sys_grid.addWidget(btn, i // 2, i % 2)
-        p4.addLayout(sys_grid)
+        card_tools.add_layout(sys_grid)
+        p4.addWidget(card_tools)
+
+        about_card = Card("ℹ️ 关于", "版本、更新源与交流群",
+                          tip="点「检查更新」会读取 GitHub Releases 的最新版本号对比")
+        about_link = QLabel(
+            f'<a href="{UPDATE_URL}" style="color:#93c5fd; text-decoration:none;">'
+            f'小鲸鱼桌宠 v{LOCAL_VERSION} · 访问更新源</a>')
+        about_link.setOpenExternalLinks(True)
+        qq_label = QLabel(f"QQ 交流群：{QQ_GROUP}")
+        qq_label.setStyleSheet("color:#94a3b8; font-size:13px;")
+        about_card.add(about_link)
+        about_card.add(qq_label)
+        p4.addWidget(about_card)
         p4.addStretch()
 
         self.tabs.addTab(page_interact, "互动")
         self.tabs.addTab(page_token, "Token")
         self.tabs.addTab(page_bubble, "气泡")
         self.tabs.addTab(page_system, "系统")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
-        about = QLabel(
-            f'<a href="{UPDATE_URL}" style="color:#93c5fd; text-decoration:none;">'
-            f'小鲸鱼桌宠 v{LOCAL_VERSION} · 访问更新源</a>'
-            f'<span style="color:#64748b;">　|　QQ 群 {QQ_GROUP}</span>')
-        about.setObjectName("about")
-        about.setOpenExternalLinks(True)
-        about.setAlignment(Qt.AlignCenter)
-        about.setStyleSheet("font-size:12px; color:#64748b; margin-top:2px;")
-        root_layout.addWidget(about)
+        # 搜索框：过滤卡片（匹配卡片标题/说明/内部控件文字）
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("🔍 搜索设置项（如 音量、泡泡、自启）")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._on_search)
+        root_layout.insertWidget(1, self.search_edit)     # 放在标题栏下方
+        self._cards = self.findChildren(Card)
 
         # 低分辨率屏幕才启用滚动区；高分辨率保持原来的样式
         screen = QApplication.primaryScreen()
@@ -1218,10 +1339,22 @@ class SettingsPanel(QWidget):
             self.close()
         super().changeEvent(event)
 
-    def _section(self, text):
-        l = QLabel(text)
-        l.setObjectName("section")
-        return l
+    def _plain_btn(self, text, handler):
+        """卡片内并排的次要按钮。"""
+        btn = QPushButton(text)
+        btn.clicked.connect(handler)
+        return btn
+
+    def _on_search(self, text):
+        """按关键字过滤卡片（匹配卡片标题/说明/内部控件文字）。"""
+        key = text.strip().lower()
+        for card in self._cards:
+            card.setVisible(not key or key in card.keywords.lower())
+
+    def _on_tab_changed(self, index):
+        """记住上次所在的标签页。"""
+        self.pet.panel_tab = int(index)
+        self.pet.save()
 
     def _row(self, widget, value_widget):
         row = QHBoxLayout()
@@ -1525,6 +1658,10 @@ class PetWindow(QWidget):
         self.autostart = bool(self.cfg.get("autostart", False))
         self.hud_visible = bool(self.cfg.get("hud_visible", True))
         self.hud_abbrev = bool(self.cfg.get("hud_abbrev", True))
+        self.panel_pinned = bool(self.cfg.get("panel_pinned", False))
+        _pos = self.cfg.get("panel_pos")
+        self.panel_pos = list(_pos) if isinstance(_pos, (list, tuple)) and len(_pos) == 2 else None
+        self.panel_tab = max(0, min(3, int(self.cfg.get("panel_tab", 0))))
         self.snap_enabled = bool(self.cfg.get("snap_enabled", True))
         self.app_monitor_enabled = bool(self.cfg.get("app_monitor_enabled", True))
         rules = self.cfg.get("app_rules")
@@ -2657,18 +2794,32 @@ class PetWindow(QWidget):
                 pass
         panel = SettingsPanel(self)
         self.settings_panel = panel
+        # 记住的页签
+        if 0 <= self.panel_tab < panel.tabs.count():
+            panel.tabs.setCurrentIndex(self.panel_tab)
         if global_pos is not None:
             panel.move(global_pos.x(), global_pos.y())
+        elif self.panel_pinned and self.panel_pos:
+            panel.move(int(self.panel_pos[0]), int(self.panel_pos[1]))   # 还原上次位置
         else:
             self.sync_settings_panel_position()
         panel.show()
         panel.ensure_on_screen()
+
+    def remember_panel_geometry(self, panel):
+        """记住用户拖动后的面板位置与当前页签（此后不再随桌宠移动）。"""
+        self.panel_pinned = True
+        self.panel_pos = [panel.x(), panel.y()]
+        self.panel_tab = panel.tabs.currentIndex()
+        self.save()
 
     def sync_settings_panel_position(self):
         if self.settings_panel is None or not self.settings_panel.isVisible():
             return
         if getattr(self, "_panel_lock", False):
             return          # 拖动大小滑块中：面板保持不动，防止滑块断触
+        if self.panel_pinned:
+            return          # 用户手动摆过位置：不再跟随桌宠移动
         pw = self.settings_panel.width()
         ph = self.settings_panel.height()
         screen = QApplication.primaryScreen()
@@ -3010,6 +3161,9 @@ class PetWindow(QWidget):
         cfg["autostart"] = self.autostart
         cfg["hud_visible"] = self.hud_visible
         cfg["hud_abbrev"] = self.hud_abbrev
+        cfg["panel_pinned"] = self.panel_pinned
+        cfg["panel_pos"] = self.panel_pos
+        cfg["panel_tab"] = self.panel_tab
         cfg["snap_enabled"] = self.snap_enabled
         cfg["app_monitor_enabled"] = self.app_monitor_enabled
         cfg["app_rules"] = self.app_rules
