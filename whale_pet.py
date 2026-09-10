@@ -1470,21 +1470,13 @@ class SettingsPanel(QWidget):
         self.tabs.setFixedHeight(page_h + bar_h + 8)
         self.setMinimumHeight(0)
         self.setMaximumHeight(16777215)
+        # 面板尺寸（回到小巧的原有观感）：宽度固定 470；
+        # 高度 = 当前页内容高度，但最多占屏幕 70%（超出滚动），不会占满整屏
+        self.setFixedWidth(max(470, self.card.minimumSizeHint().width() + 38))
+        need = self.card.sizeHint().height() + 24 + 8
         screen = QApplication.primaryScreen()
         geo = screen.availableGeometry() if screen else None
-        # 面板宽度按屏幕比例限制（避免在缩放屏上显得巨大），但不小于内容所需宽度
-        content_w = self.card.minimumSizeHint().width() + 24 + 14
-        if geo:
-            width = max(content_w, min(500, int(geo.width() * 0.32)))
-        else:
-            width = max(content_w, 500)
-        self.setFixedWidth(width)
-        # 面板高度：内容高度，但最多占屏幕 70%（超出部分滚动查看），避免占满整屏
-        need = self.card.sizeHint().height() + 24 + 8
-        if geo:
-            limit = max(360, int(geo.height() * 0.70))
-        else:
-            limit = 900
+        limit = max(360, int(geo.height() * 0.70)) if geo else 900
         self.low_res_scroll = need > limit
         self.setFixedHeight(min(need, limit))
 
@@ -2193,13 +2185,15 @@ class PetWindow(QWidget):
     def _apply_layout(self):
         if getattr(self, "_drag_hold", False):
             return          # 拖动中冻结布局：窗口尺寸/位置保持稳定，避免 HUD 抖动、重影
-        # 卡片高度按"行数"自适应（Token 一行 / 日期时间一行），宽度按内容
+        # 卡片高度按"行数"自适应（Token 一行 / 日期时间一行）
         font = self.hud_card._font()
         fm = QFontMetrics(font)
         rows = max(1, self.hud_card.row_count())
-        card_h = fm.height() * rows + 4 * (rows - 1) + 20
-        card_w = max(round(self.size_px * 0.86), min(max(self.hud_card.desired_width(), 140), 480))
-        win_w = max(self.size_px, card_w)
+        card_h = fm.height() * rows + 4 * (rows - 1) + 18
+        # 关键：HUD 宽度不超过角色宽度 —— 这样窗口宽度 = 角色宽度，
+        # 贴边时是"角色本人贴边"，不会出现"HUD 碰到边、人却没碰到"
+        card_w = min(self.size_px, max(140, self.hud_card.desired_width()))
+        win_w = self.size_px
         has_content = bool(self._hud_parts())
         if self.hud_visible and has_content:
             win_h = self.size_px + card_h + HUD_GAP
@@ -2208,15 +2202,14 @@ class PetWindow(QWidget):
         if self.width() != win_w or self.height() != win_h:
             self.setFixedSize(win_w, win_h)
         self.hud_card.setFixedHeight(card_h)
-        lx = (win_w - self.size_px) // 2
-        self.label.setGeometry(lx, 0, self.size_px, self.size_px)
+        self.label.setGeometry(0, 0, self.size_px, self.size_px)
         self.hud_card.setGeometry((win_w - card_w) // 2, self.size_px + HUD_GAP, card_w, card_h)
         self.hud_card.setVisible(self.hud_visible and has_content)
         self.label.raise_()
 
     def _hud_font_px(self):
-        # 用户反馈要更大更清楚：按角色高 8% 缩放，15~24px
-        return max(15, min(24, int(self.size_px * 0.08)))
+        # 字号跟随角色适度缩放（13~18px）：既能看清，又不会把时间日期撑得很大
+        return max(13, min(18, int(self.size_px * 0.065)))
 
     def _hud_parts(self):
         """组装 HUD 内容：Token 与时间/日期各自独立开关，谁关掉就不显示谁。"""
@@ -3598,7 +3591,10 @@ def enable_high_dpi():
 
 
 def main():
-    enable_high_dpi()
+    # 注意：不启用 AA_EnableHighDpiScaling。
+    # 它在 125%/150% 缩放的屏幕上会把整个界面按比例放大渲染（面板/HUD 视觉变大），
+    # 与"界面小巧、桌宠能真正贴边"的初衷冲突；拖拽漂移已由
+    # "_move_tick 拖动让位 + 拖动时取消压扁" 解决，无需全局缩放。
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     install_excepthook()

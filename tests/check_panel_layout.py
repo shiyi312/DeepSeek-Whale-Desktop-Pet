@@ -26,9 +26,23 @@ def main():
     pet.show()
     app.processEvents()
 
-    # 1) 高 DPI 修复函数存在（修复缩放屏拖拽漂移的前提）
-    assert hasattr(w, "enable_high_dpi"), "缺少 enable_high_dpi（高 DPI 修复）"
-    print("1. 高 DPI 修复函数存在 OK（缩放屏拖拽不再漂移）")
+    # 1) 贴边正确性：窗口宽度必须等于角色宽度（HUD 不得宽于角色），
+    #    否则会出现"HUD 碰到边、角色本人没碰到"
+    pet.hud_visible = True
+    pet.hud_show_token = pet.hud_show_time = pet.hud_show_date = True
+    pet._update_hud()
+    app.processEvents()
+    assert pet.width() == pet.size_px, ("窗口宽度应等于角色宽度", pet.width(), pet.size_px)
+    assert pet.hud_card.width() <= pet.size_px, ("HUD 不应宽于角色", pet.hud_card.width(), pet.size_px)
+    print("1. 贴边正确性 OK（窗口宽=角色宽，HUD 不宽于角色 → 贴边时角色本人贴边）")
+
+    # 1b) 全局高 DPI 缩放不应启用（它会把界面整体放大 1.5 倍）
+    import re as _re
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "whale_pet.py"), encoding="utf-8").read()
+    main_body = src.split("def main():", 1)[1][:600]
+    assert "enable_high_dpi()" not in main_body, "main() 不应启用全局高 DPI 缩放"
+    print("1b. 未启用全局高 DPI 缩放 OK（界面保持原有小巧尺寸）")
 
     panel = w.SettingsPanel(pet)
     pet.settings_panel = panel
