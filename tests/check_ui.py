@@ -125,7 +125,8 @@ def main():
         xr = range(margin + 8, iw - margin - 8)
         yr = range(margin + 8, ih - margin - 8)
         edge_has_content(xr, range(ih - margin - 3, ih - margin + 1), "底部")
-        edge_has_content(range(iw - margin - 3, iw - margin + 1), yr, "右侧")
+        # 右侧只检测最外侧 6px（避开内容区内的滚动条，否则限高滚动时必然误报）
+        edge_has_content(range(iw - 8, iw - 3), yr, "右侧")
 
     print(f"检查控件数: {checked}（分页：{per_page}）")
     print(f"各页面板高度: {page_heights}")

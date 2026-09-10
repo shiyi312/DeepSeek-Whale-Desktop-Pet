@@ -1470,15 +1470,21 @@ class SettingsPanel(QWidget):
         self.tabs.setFixedHeight(page_h + bar_h + 8)
         self.setMinimumHeight(0)
         self.setMaximumHeight(16777215)
-        # 面板宽度也要跟着内容：避免右侧控件被裁（留边距 + 滚动条余量）
-        need_w = self.card.minimumSizeHint().width() + 24 + 14
-        self.setFixedWidth(max(500, need_w))
-        # +24 面板外边距，+8 余量：避免"差几个像素"导致底部内容被裁掉
-        need = self.card.sizeHint().height() + 24 + 8
         screen = QApplication.primaryScreen()
-        avail = screen.availableGeometry().height() if screen else 1080
-        # 限高阈值放宽（原来 -60 太紧，会让系统页底部被裁）
-        limit = max(360, avail - 16)
+        geo = screen.availableGeometry() if screen else None
+        # 面板宽度按屏幕比例限制（避免在缩放屏上显得巨大），但不小于内容所需宽度
+        content_w = self.card.minimumSizeHint().width() + 24 + 14
+        if geo:
+            width = max(content_w, min(500, int(geo.width() * 0.32)))
+        else:
+            width = max(content_w, 500)
+        self.setFixedWidth(width)
+        # 面板高度：内容高度，但最多占屏幕 70%（超出部分滚动查看），避免占满整屏
+        need = self.card.sizeHint().height() + 24 + 8
+        if geo:
+            limit = max(360, int(geo.height() * 0.70))
+        else:
+            limit = 900
         self.low_res_scroll = need > limit
         self.setFixedHeight(min(need, limit))
 
@@ -1793,6 +1799,8 @@ class PetWindow(QWidget):
         self._click_count = 0
         self._press_at = 0.0
         self._rotate_pos = 0
+        self._drag_hold = False
+        self._wander_stuck = 0
         self.auto_mirror = bool(self.cfg.get("auto_mirror", True))
         self.lock_position = bool(self.cfg.get("lock_position", False))
         self.always_on_top = bool(self.cfg.get("always_on_top", True))
@@ -1903,6 +1911,7 @@ class PetWindow(QWidget):
             if screen:
                 geo = screen.availableGeometry()
                 self.move(geo.right() - self.width() - 30, geo.bottom() - self.height() - 60)
+        self.ensure_visible_on_screen()      # 位置兜底：绝不出现"程序在跑但看不到桌宠"
 
         self.apply_expression(self.expression, save=False, play_sound=False)
         self._refresh_mirror()
@@ -2182,6 +2191,8 @@ class PetWindow(QWidget):
 
     # ---------- Token 趣味系统 ----------
     def _apply_layout(self):
+        if getattr(self, "_drag_hold", False):
+            return          # 拖动中冻结布局：窗口尺寸/位置保持稳定，避免 HUD 抖动、重影
         # 卡片高度按"行数"自适应（Token 一行 / 日期时间一行），宽度按内容
         font = self.hud_card._font()
         fm = QFontMetrics(font)
@@ -2638,6 +2649,10 @@ class PetWindow(QWidget):
             return
         if self.settings_panel is not None and self.settings_panel.isVisible():
             return
+        # 用户正在拖动/按住时，自动移动（漫游/跟随/躲避）必须让位，
+        # 否则会和拖动抢位置 → 表现为平移、抖动、重影
+        if self._dragging or getattr(self, "_drag_hold", False):
+            return
         if self._sling_active:
             self._sling_step(dt)
         elif self._r_dragging:
@@ -2756,6 +2771,19 @@ class PetWindow(QWidget):
         cx, cy = self._center()
         self._move_center(cx + math.cos(self._wander_angle) * self._wander_speed * dt,
                           cy + math.sin(self._wander_angle) * self._wander_speed * dt)
+        # 卡住检测：贴边或受限导致位置几乎没动 → 结束这一段，休息后换个方向（避免原地抖动）
+        nx, ny = self._center()
+        if abs(nx - cx) < 0.5 and abs(ny - cy) < 0.5:
+            self._wander_stuck = getattr(self, "_wander_stuck", 0) + 1
+            if self._wander_stuck >= 6:
+                self._wander_stuck = 0
+                self._wander_mode_state = "stop"
+                self._wander_delay = random.uniform(1.5, 3.0)
+                self._wander_speed = 0.0
+                self._wander_angle = random.uniform(0, math.tau)
+                self._wander_turn = 0.0
+        else:
+            self._wander_stuck = 0
 
     def _wander_edge_target(self):
         """靠近屏幕边缘时，把朝向慢慢拉向屏幕中心，避免走出屏幕（对标鲸鱼娘）。"""
@@ -2865,6 +2893,26 @@ class PetWindow(QWidget):
         self.play_sound("click")
 
     # ---------- 鼠标/拖拽/边缘 ----------
+    def ensure_visible_on_screen(self):
+        """确保窗口大部分在屏幕可见范围内（换分辨率/缩放/显示器后旧坐标可能在屏幕外，
+        会导致"程序在运行但桌面上看不到桌宠"）。"""
+        screen = QApplication.primaryScreen()
+        if not screen:
+            return
+        geo = screen.availableGeometry()
+        rect = QRect(self.x(), self.y(), max(1, self.width()), max(1, self.height()))
+        inter = rect.intersected(geo)
+        visible = max(0, inter.width()) * max(0, inter.height())
+        total = rect.width() * rect.height()
+        if total <= 0 or visible < total * 0.35:
+            nx = geo.right() - self.width() - 40
+            ny = geo.bottom() - self.height() - 80
+            nx = max(geo.left(), min(nx, geo.right() - self.width()))
+            ny = max(geo.top(), min(ny, geo.bottom() - self.height()))
+            self._log(f"启动位置 ({rect.x()},{rect.y()}) 超出屏幕可见范围，已重置到 ({nx},{ny})")
+            self.move(int(nx), int(ny))
+            self.save()
+
     def _clamp_pos(self, x, y):
         screen = QApplication.primaryScreen()
         if not screen:
@@ -2951,6 +2999,7 @@ class PetWindow(QWidget):
                 if not self._moved:
                     # 一旦进入拖动，取消按压压扁，避免拖拽时图像变形（看起来像重影/断触）
                     self._animate_squish(1.0, 1.0, 80)
+                    self._drag_hold = True      # 拖动期间冻结 HUD 布局更新
                 self._moved = True
             nx, ny = self._clamp_pos(self.x() + delta.x(), self.y() + delta.y())
             self.move(nx, ny)
@@ -2980,6 +3029,9 @@ class PetWindow(QWidget):
                     self._snap_to_edge()
                 self.save()
             self._moved = False
+            if getattr(self, "_drag_hold", False):
+                self._drag_hold = False
+                self._update_hud()          # 拖动结束后再刷新 HUD 布局
             self._reset_idle_timers()
             event.accept()
         elif event.button() == Qt.RightButton:
