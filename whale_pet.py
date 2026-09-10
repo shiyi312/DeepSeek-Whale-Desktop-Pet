@@ -17,22 +17,21 @@ import threading
 import time
 import urllib.request
 import webbrowser
-from collections import deque
 
 from PyQt5.QtCore import (
-    Qt, QEvent, QTimer, QUrl, QSize, QRect, QRectF, QPoint, QPointF,
+    Qt, QEvent, QTimer, QUrl, QSize, QRect, QRectF, QPointF,
     QPropertyAnimation, QEasingCurve, QLockFile, pyqtSignal, QVariantAnimation
 )
 from PyQt5.QtGui import (
     QPixmap, QMovie, QIcon, QColor, QPainter, QPen, QBrush,
-    QPainterPath, QFont, QFontMetrics, QLinearGradient, QTransform, QCursor
+    QPainterPath, QFont, QFontMetrics, QTransform, QCursor
 )
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QSlider,
     QCheckBox, QComboBox, QLineEdit, QPushButton, QFrame, QListWidget,
     QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QSystemTrayIcon, QMenu,
-    QScrollArea, QMessageBox, QTabWidget, QFileDialog
+    QScrollArea, QMessageBox, QTabWidget, QFileDialog, QInputDialog
 )
 
 try:
@@ -42,13 +41,17 @@ except Exception:
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 EXPR_DIR = os.path.join(APP_DIR, "expressions")
+SOUND_DIR = os.path.join(APP_DIR, "sounds")
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".dshw-desktop-pet.json")
 UPDATE_URL = "https://github.com/shiyi312/DeepSeek-Whale-Desktop-Pet"
 LOG_PATH = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "dshw-pet.log")
 
 LOCAL_VERSION = "4.1.0"
-LOG_MAX_BYTES = 512 * 1024
+LOG_KEEP = 100
 HUD_GAP = 2
+SFX_POOL_SIZE = 5
+QQ_GROUP = "254668799"
+QQ_GROUP_URL = "https://qun.qq.com/qq/254668799"
 
 DEFAULT_APP_RULES = [
     {"match": "steam", "text": "又在打游戏啦？记得适可而止哦~", "enabled": True},
@@ -59,6 +62,7 @@ DEFAULT_APP_RULES = [
 SIZE_MIN = 1
 SIZE_MAX = 20
 SIZE_BASE = 220
+SIZE_SCALE_MAX = 2.5
 EDGE_MARGIN = 40
 DEFAULT_SIZE_LEVEL = 10
 
@@ -138,11 +142,175 @@ def save_config(cfg):
 
 
 def rotate_log_if_needed():
+    """启动时把上一次的日志归档（保留最近 LOG_KEEP 份），便于查闪退。"""
     try:
-        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
-            os.replace(LOG_PATH, LOG_PATH + ".old")
+        if not os.path.exists(LOG_PATH) or os.path.getsize(LOG_PATH) == 0:
+            return
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        base, ext = os.path.splitext(LOG_PATH)
+        os.replace(LOG_PATH, f"{base}_{stamp}{ext}")
+        logs = sorted(glob.glob(f"{base}_*{ext}"))
+        for old in logs[:-LOG_KEEP]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
     except OSError:
         pass
+
+
+# ---------- 外部编辑文件（台词 / 应用监测规则，均带注释说明） ----------
+LINES_PATH = os.path.join(os.path.expanduser("~"), ".dshw-pet-lines.txt")
+RULES_PATH = os.path.join(os.path.expanduser("~"), ".dshw-pet-rules.txt")
+
+LINES_TEMPLATE = """# ============================================================
+#  小鲸鱼桌宠 · 气泡台词文件（可直接编辑，保存后生效）
+# ============================================================
+# 怎么写：
+#   1. 一行写一句台词，写完保存本文件即可；
+#   2. 以 # 开头的整行是「注释」，不会显示出来；
+#   3. 空白行会被自动忽略；
+#   4. 想让新台词立刻生效：设置 → 系统 →「重新加载台词与规则」，
+#      或重启桌宠（台词模式选「随机台词」或「自定义台词」时用这里的内容）。
+#
+# 下面是自带台词（可以随意删改）：
+"""
+
+RULES_TEMPLATE = """# ============================================================
+#  小鲸鱼桌宠 · 应用打开监测规则（可直接编辑，保存后生效）
+# ============================================================
+# 每行一条规则，用竖线 | 分成 4 段：
+#   匹配词 | 触发台词 | 触发概率(0-100，可省略，默认100) | 是否启用(1开/0关，可省略，默认1)
+#
+# 各段说明：
+#   · 匹配词：进程名或窗口标题里的关键字（不区分大小写）
+#       例：steam（Steam）、chrome（浏览器）、vscode（VS Code）、QQ、网易云
+#   · 触发台词：命中后桌宠说的话，随便写
+#   · 触发概率：打开该应用时有百分之多少的几率说这句话
+#       例：30 表示 30% 概率触发（想每次都说就填 100；想让桌宠少唠叨就填 10~30）
+#   · 是否启用：1 = 开启这条规则；0 = 暂时关闭（不用删掉）
+#
+# 注意：
+#   · 以 # 开头的整行是注释，空白行忽略；
+#   · 同一个应用 5 分钟内只会说一次，不会一直刷屏；
+#   · 改完保存本文件后，设置 → 系统 →「重新加载台词与规则」即可生效。
+#
+# 下面是示例规则（可以随意删改）：
+"""
+
+
+def ensure_lines_file(defaults):
+    """首次运行生成带注释的台词文件。"""
+    if os.path.exists(LINES_PATH):
+        return
+    try:
+        with open(LINES_PATH, "w", encoding="utf-8") as f:
+            f.write(LINES_TEMPLATE)
+            for line in defaults:
+                f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def load_lines_file():
+    """读取台词文件（忽略 # 注释与空行）。"""
+    lines = []
+    try:
+        with open(LINES_PATH, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if line and not line.startswith("#"):
+                    lines.append(line)
+    except OSError:
+        pass
+    return lines
+
+
+def load_rules_file():
+    """读取应用监测规则文件：匹配词 | 台词 | 概率 | 启用。"""
+    rules = []
+    try:
+        with open(RULES_PATH, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) < 2 or not parts[0] or not parts[1]:
+                    continue
+                chance, enabled = 100, True
+                if len(parts) >= 3 and parts[2]:
+                    try:
+                        chance = max(0, min(100, int(float(parts[2]))))
+                    except ValueError:
+                        chance = 100
+                if len(parts) >= 4 and parts[3]:
+                    enabled = parts[3].lower() not in ("0", "false", "no", "关", "否")
+                rules.append({"match": parts[0], "text": parts[1], "chance": chance, "enabled": enabled})
+    except OSError:
+        pass
+    return rules
+
+
+def write_rules_file(rules):
+    """把当前规则写回文件（保留注释头）。"""
+    try:
+        with open(RULES_PATH, "w", encoding="utf-8") as f:
+            f.write(RULES_TEMPLATE)
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                f.write("{0} | {1} | {2} | {3}\n".format(
+                    rule.get("match", ""), rule.get("text", ""),
+                    int(rule.get("chance", 100)), 1 if rule.get("enabled", True) else 0))
+    except OSError:
+        pass
+
+
+# ---------- 磁盘图标美化（大肥鱼） ----------
+def build_fish_ico(png_path, ico_path, size=256):
+    """把 PNG 转成 ICO（单张 PNG 内嵌，Vista 及以上支持）。"""
+    import struct
+    pix = QPixmap(png_path)
+    if pix.isNull():
+        return False
+    pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    tmp = ico_path + ".tmp.png"
+    if not pix.save(tmp, "PNG"):
+        return False
+    try:
+        with open(tmp, "rb") as f:
+            data = f.read()
+    except OSError:
+        return False
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    try:
+        with open(ico_path, "wb") as f:
+            f.write(struct.pack("<HHH", 0, 1, 1))                      # ICONDIR
+            f.write(struct.pack("<BBBBHHII", 0, 0, 0, 0, 1, 32, len(data), 22))  # ICONDIRENTRY
+            f.write(data)
+    except OSError:
+        return False
+    return True
+
+
+def apply_drive_icon(drive, ico_path):
+    """在磁盘根目录写 desktop.ini 指向图标（需要管理员权限），失败返回 False。"""
+    root = drive.rstrip("\\") + "\\"
+    ini = os.path.join(root, "desktop.ini")
+    try:
+        with open(ini, "w", encoding="utf-8") as f:
+            f.write("[.ShellClassInfo]\n")
+            f.write(f"IconResource={ico_path},0\n")
+        subprocess.run(["attrib", "+s", "+h", ini], capture_output=True)
+        subprocess.run(["attrib", "+s", root], capture_output=True)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def expr_display_name(raw):
@@ -182,10 +350,58 @@ def scan_expressions():
     return result
 
 
+def scan_sounds():
+    """扫描 sounds/ 目录：{模式名: {"click": 路径, "release": 路径}}。
+    支持 xxx.mp3（点击/松手同一文件）与 xxx_click.mp3 + xxx_release.mp3 配对。"""
+    result = {}
+    os.makedirs(SOUND_DIR, exist_ok=True)
+    files = {}
+    for ext in ("*.mp3", "*.MP3", "*.wav", "*.WAV", "*.ogg", "*.m4a"):
+        for path in sorted(glob.glob(os.path.join(SOUND_DIR, ext))):
+            files[os.path.splitext(os.path.basename(path))[0]] = path
+    for name in list(files):
+        if name.endswith("_click") and name[:-6] + "_release" in files:
+            result[name[:-6]] = {"click": files[name], "release": files[name[:-6] + "_release"]}
+    for name, path in files.items():
+        if name.endswith("_click") or name.endswith("_release"):
+            continue
+        result.setdefault(name, {"click": path, "release": path})
+    return result
+
+
 def size_level_to_px(level):
+    """档位 → 像素：1~10 段保持原有尺寸，10~20 段扩展到 2.5 倍上限。"""
     level = max(SIZE_MIN, min(SIZE_MAX, int(level)))
-    factor = 0.6 + (level - SIZE_MIN) * (1.5 - 0.6) / (SIZE_MAX - SIZE_MIN)
+    mid = (SIZE_MIN + SIZE_MAX) // 2
+    scale_mid = 0.6 + (mid - SIZE_MIN) * (1.5 - 0.6) / (SIZE_MAX - SIZE_MIN)   # 保持原默认档尺寸
+    if level <= mid:
+        factor = 0.6 + (level - SIZE_MIN) * (scale_mid - 0.6) / (mid - SIZE_MIN)
+    else:
+        factor = scale_mid + (level - mid) * (SIZE_SCALE_MAX - scale_mid) / (SIZE_MAX - mid)
     return max(100, round(SIZE_BASE * factor))
+
+
+# Q 弹多关键帧（对标鲸鱼娘 SQUASH_KEY）：(时间比例, 纵向缩放 sy, 横向缩放 sx)，底部中心锚点
+SQUASH_KEY = [
+    (0.00, 1.00, 1.00),
+    (0.18, 0.86, 1.12),
+    (0.38, 1.12, 0.93),
+    (0.58, 0.94, 1.05),
+    (0.78, 1.02, 0.99),
+    (1.00, 1.00, 1.00),
+]
+
+
+def squash_at(t):
+    """按关键帧插值出 (sy, sx)。"""
+    t = max(0.0, min(1.0, float(t)))
+    for i in range(len(SQUASH_KEY) - 1):
+        t0, sy0, sx0 = SQUASH_KEY[i]
+        t1, sy1, sx1 = SQUASH_KEY[i + 1]
+        if t <= t1:
+            k = 0.0 if t1 == t0 else (t - t0) / (t1 - t0)
+            return sy0 + (sy1 - sy0) * k, sx0 + (sx1 - sx0) * k
+    return SQUASH_KEY[-1][1], SQUASH_KEY[-1][2]
 
 
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -235,6 +451,23 @@ def is_autostart_enabled():
             winreg.CloseKey(key)
     except OSError:
         return False
+
+
+def autostart_command_matches():
+    """注册表里的自启命令是否指向当前程序（路径正确才叫真的能自启）。"""
+    if winreg is None:
+        return False
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY, 0, winreg.KEY_READ)
+        try:
+            value, _ = winreg.QueryValueEx(key, AUTOSTART_NAME)
+        finally:
+            winreg.CloseKey(key)
+    except OSError:
+        return False
+    reg = str(value).strip().strip('"')
+    want = get_autostart_command().strip().strip('"')
+    return os.path.normcase(reg.split('"')[0].strip()) == os.path.normcase(want.split('"')[0].strip())
 
 
 class BubbleWidget(QWidget):
@@ -608,6 +841,9 @@ class SettingsPanel(QWidget):
         self.sound_combo = QComboBox()
         self.sound_combo.addItem("小黄鸭", "duck")
         self.sound_combo.addItem("音效1", "fx1")
+        for mode in pet.sounds:
+            if mode not in ("duck", "fx1"):
+                self.sound_combo.addItem(mode, mode)
         idx = self.sound_combo.findData(pet.sound_mode)
         if idx >= 0:
             self.sound_combo.setCurrentIndex(idx)
@@ -715,6 +951,9 @@ class SettingsPanel(QWidget):
         p3.addWidget(self.custom_list)
         p3.addWidget(add_btn)
         p3.addWidget(delete_btn)
+        lines_btn = QPushButton("编辑台词文件（txt，每行一句）")
+        lines_btn.clicked.connect(self._on_open_lines)
+        p3.addWidget(lines_btn)
         self._refresh_custom_list()
 
         p3.addWidget(self._section("气泡"))
@@ -807,7 +1046,7 @@ class SettingsPanel(QWidget):
 
         p4.addWidget(self._section("系统"))
         self.autostart_check = QCheckBox("开机自启")
-        self.autostart_check.setChecked(pet.autostart)
+        self.autostart_check.setChecked(is_autostart_enabled())
         self.autostart_check.toggled.connect(self._on_autostart)
         p4.addWidget(self.autostart_check)
 
@@ -838,6 +1077,15 @@ class SettingsPanel(QWidget):
         self.rule_list.setMaximumHeight(100)
         self.rule_list.itemDoubleClicked.connect(lambda item: self._on_toggle_rule())
         p4.addWidget(self.rule_list)
+        rules_file_btn = QPushButton("编辑规则文件（txt，含概率说明）")
+        rules_file_btn.clicked.connect(self._on_open_rules)
+        reload_ext_btn = QPushButton("重新加载台词与规则")
+        reload_ext_btn.clicked.connect(self._on_reload_external)
+        drive_btn = QPushButton("美化磁盘图标（大肥鱼）")
+        drive_btn.clicked.connect(self.pet.beautify_drive_icons)
+        p4.addWidget(rules_file_btn)
+        p4.addWidget(reload_ext_btn)
+        p4.addWidget(drive_btn)
         self._refresh_rules()
 
         update_btn = QPushButton("检查更新")
@@ -861,14 +1109,35 @@ class SettingsPanel(QWidget):
 
         about = QLabel(
             f'<a href="{UPDATE_URL}" style="color:#93c5fd; text-decoration:none;">'
-            f'小鲸鱼桌宠 v{LOCAL_VERSION} · 访问更新源</a>')
+            f'小鲸鱼桌宠 v{LOCAL_VERSION} · 访问更新源</a>'
+            f'<span style="color:#64748b;">　|　QQ 群 {QQ_GROUP}</span>')
         about.setObjectName("about")
         about.setOpenExternalLinks(True)
         about.setAlignment(Qt.AlignCenter)
         about.setStyleSheet("font-size:12px; color:#64748b; margin-top:2px;")
         root_layout.addWidget(about)
 
-        outer.addWidget(card)
+        # 低分辨率屏幕才启用滚动区；高分辨率保持原来的样式
+        screen = QApplication.primaryScreen()
+        avail_h = screen.availableGeometry().height() if screen else 1080
+        need_h = self.sizeHint().height()
+        self.low_res_scroll = need_h > avail_h - 60
+        if self.low_res_scroll:
+            scroll = QScrollArea(self)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setStyleSheet(
+                "QScrollArea{background:transparent;border:none;}"
+                "QScrollBar:vertical{width:8px;background:transparent;margin:2px;}"
+                "QScrollBar::handle:vertical{background:rgba(148,163,184,0.55);border-radius:4px;}"
+                "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}")
+            card.setParent(None)
+            scroll.setWidget(card)
+            outer.addWidget(scroll)
+            self.setFixedHeight(min(need_h, max(360, avail_h - 60)))
+        else:
+            outer.addWidget(card)
 
         self._hover_timer = QTimer(self)
         self._hover_timer.setInterval(150)
@@ -902,11 +1171,6 @@ class SettingsPanel(QWidget):
         if event.type() == QEvent.WindowDeactivate:
             self.close()
         super().changeEvent(event)
-
-    def _title(self, text):
-        l = QLabel(text)
-        l.setObjectName("title")
-        return l
 
     def _section(self, text):
         l = QLabel(text)
@@ -1074,7 +1338,9 @@ class SettingsPanel(QWidget):
         for rule in self.pet.app_rules:
             if isinstance(rule, dict):
                 mark = "开" if rule.get("enabled", True) else "关"
-                self.rule_list.addItem(f"[{mark}] {rule.get('match', '')} → {rule.get('text', '')}")
+                chance = int(rule.get("chance", 100))
+                self.rule_list.addItem(
+                    f"[{mark}] {rule.get('match', '')} → {rule.get('text', '')}（{chance}%）")
 
     def _on_add_rule(self):
         match = self.rule_match_edit.text().strip()
@@ -1082,8 +1348,8 @@ class SettingsPanel(QWidget):
         if not match or not text:
             self.pet.show_bubble_quick("请先填写匹配词和台词")
             return
-        self.pet.app_rules.append({"match": match, "text": text, "enabled": True})
-        self.pet.save()
+        self.pet.app_rules.append({"match": match, "text": text, "chance": 100, "enabled": True})
+        self.pet.save_rules()
         self.rule_match_edit.clear()
         self.rule_text_edit.clear()
         self._refresh_rules()
@@ -1092,7 +1358,7 @@ class SettingsPanel(QWidget):
         row = self.rule_list.currentRow()
         if 0 <= row < len(self.pet.app_rules):
             del self.pet.app_rules[row]
-            self.pet.save()
+            self.pet.save_rules()
             self._refresh_rules()
 
     def _on_toggle_rule(self):
@@ -1100,8 +1366,18 @@ class SettingsPanel(QWidget):
         if 0 <= row < len(self.pet.app_rules) and isinstance(self.pet.app_rules[row], dict):
             rule = self.pet.app_rules[row]
             rule["enabled"] = not rule.get("enabled", True)
-            self.pet.save()
+            self.pet.save_rules()
             self._refresh_rules()
+
+    def _on_open_lines(self):
+        self.pet.open_lines_file()
+
+    def _on_open_rules(self):
+        self.pet.open_rules_file()
+
+    def _on_reload_external(self):
+        self.pet.reload_external()
+        self._refresh_rules()
 
     def _on_token_enabled(self, enabled):
         self.pet.set_token_enabled(enabled)
@@ -1191,9 +1467,10 @@ class PetWindow(QWidget):
         self.sound_mode = self.cfg.get("sound_mode", "duck")
         self.volume = int(self.cfg.get("volume", 70))
         self.custom_sound_path = self.cfg.get("custom_sound_path", "")
+        if self.custom_sound_path and not os.path.exists(self.custom_sound_path):
+            self._log("自定义音效文件不存在，已自动清除：" + self.custom_sound_path)
+            self.custom_sound_path = ""
         self.autostart = bool(self.cfg.get("autostart", False))
-        self.per_turn_on = bool(self.cfg.get("per_turn_on", False))
-        self.peak_mode = self.cfg.get("peak_mode", "default")
         self.hud_visible = bool(self.cfg.get("hud_visible", True))
         self.hud_abbrev = bool(self.cfg.get("hud_abbrev", True))
         self.snap_enabled = bool(self.cfg.get("snap_enabled", True))
@@ -1202,6 +1479,13 @@ class PetWindow(QWidget):
         if not isinstance(rules, list) or not rules:
             rules = copy.deepcopy(DEFAULT_APP_RULES)
         self.app_rules = rules
+        ensure_lines_file(RANDOM_TEXTS)
+        self.lines_file = load_lines_file()
+        file_rules = load_rules_file()
+        if file_rules:
+            self.app_rules = file_rules
+        else:
+            write_rules_file(self.app_rules)
 
         self.setFixedSize(self.size_px, self.size_px + 34)
 
@@ -1228,8 +1512,10 @@ class PetWindow(QWidget):
         self.update_done.connect(self._on_update_done)
         self._update_hud()
 
-        self._active_players = []
-        self._sound_cache = {}
+        self._sfx_pool = []
+        self._sfx_seq = 0
+        self._evade_tele_at = 0.0
+        self.sounds = {}
         self._squish_anim = None
         self._fade_anim = None
         self._base_pixmap = None
@@ -1240,7 +1526,6 @@ class PetWindow(QWidget):
         self._moved = False
         self.settings_panel = None
 
-        self._click_times = deque(maxlen=5)
         self._last_expression = self.expression
         self._idle_8s = QTimer(self)
         self._idle_8s.setSingleShot(True)
@@ -1271,62 +1556,83 @@ class PetWindow(QWidget):
                 self.move(geo.right() - self.width() - 30, geo.bottom() - self.height() - 60)
 
         self._load_sounds()
+        self._sync_autostart()
         self._reset_idle_timers()
         self._log("小鲸鱼桌宠启动")
 
-    # ---------- 音效 ----------
+    # ---------- 音效（播放器池：每声完整播放、零延迟、最多池上限层不糊） ----------
     def _load_sounds(self):
-        files = {
-            "duck_click": "Ya1.mp3", "duck_release": "Ya2.mp3",
-            "fx1_click": "D1.mp3", "fx1_release": "D2.mp3", "switch": "D2.mp3",
+        builtin = {
+            "duck": {"click": "Ya1.mp3", "release": "Ya2.mp3"},
+            "fx1": {"click": "D1.mp3", "release": "D2.mp3"},
         }
-        for key, fname in files.items():
-            p = os.path.join(EXPR_DIR, fname)
-            if not os.path.exists(p):
-                alt = os.path.expanduser(r"~\.dsh\profiles\desktop\node_modules\dsh-whale-widget\assets\\" + fname)
-                if os.path.exists(alt):
-                    p = alt
-                else:
-                    continue
-            self._sound_cache[key] = p
+        self.sounds = {}
+        for mode, pair in builtin.items():
+            resolved = {}
+            for kind, fname in pair.items():
+                p = os.path.join(EXPR_DIR, fname)
+                if not os.path.exists(p):
+                    alt = os.path.expanduser(
+                        r"~\.dsh\profiles\desktop\node_modules\dsh-whale-widget\assets\\" + fname)
+                    if os.path.exists(alt):
+                        p = alt
+                    else:
+                        continue
+                resolved[kind] = p
+            if resolved:
+                self.sounds[mode] = resolved
+        self.sounds.update(scan_sounds())
+        self._sfx_pool = [QMediaPlayer() for _ in range(SFX_POOL_SIZE)]
+        for player in self._sfx_pool:
+            player.setVolume(self.volume)
+        self._preload_sound()
 
-    def play_sound(self, key):
-        if not self.sound_enabled:
-            return
-        actual_key = key
-        if key == "click":
-            actual_key = f"{self.sound_mode}_click"
-        elif key == "release":
-            actual_key = f"{self.sound_mode}_release"
-        path = self._sound_cache.get(actual_key)
+    def _sound_path_for(self, kind):
+        # 自定义音效优先：覆盖点击 / 松手 / 弹射 / 反弹全部音效
+        if self.custom_sound_path and os.path.exists(self.custom_sound_path):
+            return self.custom_sound_path
+        item = self.sounds.get(self.sound_mode)
+        if item:
+            return item.get(kind) or item.get("click")
+        return None
+
+    def _preload_sound(self):
+        """把当前音效预加载到池内全部播放器，播放时零加载延迟。"""
+        path = self._sound_path_for("click")
         if not path:
-            path = self._sound_cache.get(self.sound_mode + "_click")
+            return
+        content = QMediaContent(QUrl.fromLocalFile(path))
+        for player in self._sfx_pool:
+            if getattr(player, "_dsh_path", "") != path:
+                player.setMedia(content)
+                player._dsh_path = path
+
+    def play_sound(self, key="click"):
+        if not self.sound_enabled or not self._sfx_pool:
+            return
+        path = self._sound_path_for("release" if key == "release" else "click")
         if not path:
             return
-        if key == "click" and self.custom_sound_path and os.path.exists(self.custom_sound_path):
-            path = self.custom_sound_path
-        player = QMediaPlayer()
-        player.setVolume(self.volume)
-        player.setMedia(QMediaContent(QUrl.fromLocalFile(path)))
-        self._active_players.append(player)
-
-        def cleanup():
-            try:
-                if player in self._active_players:
-                    self._active_players.remove(player)
-            except Exception:
-                pass
-            try:
-                player.deleteLater()
-            except Exception:
-                pass
-
-        def on_status(status):
-            if status in (QMediaPlayer.EndOfMedia, QMediaPlayer.InvalidMedia):
-                cleanup()
-
-        player.mediaStatusChanged.connect(on_status)
-        player.play()
+        try:
+            # 优先用空闲播放器 → 每声都能完整播放；都在播则接管最早的一声
+            player = None
+            for p in self._sfx_pool:
+                if p.state() != QMediaPlayer.PlayingState:
+                    player = p
+                    break
+            if player is None:
+                player = self._sfx_pool[self._sfx_seq % len(self._sfx_pool)]
+                self._sfx_seq += 1
+                player.stop()
+            else:
+                player.setPosition(0)
+            if getattr(player, "_dsh_path", "") != path:
+                player.setMedia(QMediaContent(QUrl.fromLocalFile(path)))
+                player._dsh_path = path
+            player.setVolume(self.volume)
+            player.play()
+        except Exception:
+            pass
 
     # ---------- 表情 ----------
     def _mirror_pixmap(self, pix):
@@ -1509,12 +1815,14 @@ class PetWindow(QWidget):
         if self.line_source == "fixed":
             return self.fixed_line
         if self.line_source == "custom":
-            if self.custom_lines:
-                return random.choice(self.custom_lines)
+            pool = self.lines_file + self.custom_lines
+            if pool:
+                return random.choice(pool)
             return ""
         # random
-        if self.random_enabled and self.custom_lines:
-            return random.choice(self.custom_lines + RANDOM_TEXTS)
+        pool = self.lines_file + self.custom_lines
+        if self.random_enabled and pool:
+            return random.choice(pool + RANDOM_TEXTS)
         if self.random_enabled:
             return random.choice(RANDOM_TEXTS)
         return ""
@@ -1734,11 +2042,16 @@ class PetWindow(QWidget):
         except Exception:
             return "", ""
 
+    def _rule_chance_hit(self, rule):
+        """规则概率判定：chance 为 0~100 的百分比。"""
+        chance = int(rule.get("chance", 100))
+        return chance >= 100 or random.random() * 100 < chance
+
     def _monitor_tick(self):
         if not self.app_monitor_enabled or not self.bubble_on:
             return
         exe, title = self._get_foreground_exe()
-        if not exe or "whaledesktop" in exe or "python" in exe:
+        if not exe or "whaledesktop" in exe:
             return
         if exe == self._last_fore_exe:
             return
@@ -1752,7 +2065,8 @@ class PetWindow(QWidget):
             text = str(rule.get("text", "")).strip()
             if not match or not text or match not in hay:
                 continue
-            last = self._rule_fire_time.get(i, 0.0)
+            if not self._rule_chance_hit(rule):
+                continue        # 概率未命中：跳过这条规则            last = self._rule_fire_time.get(i, 0.0)
             if now - last < 300:
                 return
             self._rule_fire_time[i] = now
@@ -1800,7 +2114,13 @@ class PetWindow(QWidget):
                 self.update_done.emit(f"已经是最新版本啦（v{LOCAL_VERSION}）")
         except Exception as e:
             self._log(f"检查更新失败: {e}")
-            self.update_done.emit("网络检查失败，已打开 GitHub 页面")
+            msg = str(e)
+            if "404" in msg or "not found" in msg.lower():
+                self.update_done.emit("仓库还没有发布版本，已打开仓库页面")
+            elif "timed out" in msg.lower() or "timeout" in msg.lower():
+                self.update_done.emit("网络超时，已打开 GitHub 页面")
+            else:
+                self.update_done.emit("网络检查失败，已打开 GitHub 页面")
             try:
                 webbrowser.open(UPDATE_URL)
             except Exception:
@@ -1817,8 +2137,9 @@ class PetWindow(QWidget):
         )
         if path:
             self.custom_sound_path = path
+            self._preload_sound()
             self.save()
-            self.show_bubble_quick("自定义音效已设置")
+            self.show_bubble_quick("自定义音效已设置（点击/松手/弹射全部生效）")
 
     def open_log(self):
         try:
@@ -1836,7 +2157,6 @@ class PetWindow(QWidget):
         self.move(int(nx), int(ny))
         self.sync_settings_panel_position()
         self.sync_bubble_position()
-        self.sync_hud_position()
         self._refresh_mirror()
 
     def _move_tick(self):
@@ -1869,8 +2189,8 @@ class PetWindow(QWidget):
             ty = cy + dy / d * 120
         ax = 150.0 * (tx - cx) - 8.0 * self._vx
         ay = 150.0 * (ty - cy) - 8.0 * self._vy
-        self._vx = max(-4200, min(4200, self._vx + ax * dt))
-        self._vy = max(-4200, min(4200, self._vy + ay * dt))
+        self._vx = max(-9000, min(9000, self._vx + ax * dt))
+        self._vy = max(-9000, min(9000, self._vy + ay * dt))
         self._move_center(cx + self._vx * dt, cy + self._vy * dt)
 
     def _evade_tick(self, dt):
@@ -1883,6 +2203,25 @@ class PetWindow(QWidget):
             self._vx *= 0.85
             self._vy *= 0.85
             return False
+        # 被逼到角落（离两边都 <= EVADE_CORNER_MARGIN）→ 瞬移到对角，20s 冷却
+        screen = QApplication.primaryScreen()
+        if screen:
+            g = screen.availableGeometry()
+            m = 20.0
+            near_left = cx <= g.left() + self.width() / 2.0 + m
+            near_right = cx >= g.right() - self.width() / 2.0 - m
+            near_top = cy <= g.top() + self.height() / 2.0 + m
+            near_bottom = cy >= g.bottom() - self.height() / 2.0 - m
+            cornered = (near_left or near_right) and (near_top or near_bottom)
+            if cornered and time.monotonic() - self._evade_tele_at > 20.0:
+                self._evade_tele_at = time.monotonic()
+                nx = g.right() - self.width() / 2.0 - m if near_left else g.left() + self.width() / 2.0 + m
+                ny = g.bottom() - self.height() / 2.0 - m if near_top else g.top() + self.height() / 2.0 + m
+                self._vx = self._vy = 0.0
+                self._move_center(nx, ny)
+                self.play_sound("release")
+                self._log("躲避：被逼到角落，瞬移到对角")
+                return True
         if d < 1:
             ang = random.uniform(0, math.tau)
             ux, uy = math.cos(ang), math.sin(ang)
@@ -2045,11 +2384,11 @@ class PetWindow(QWidget):
         if math.hypot(self._sling_vx, self._sling_vy) < 6:
             self._sling_active = False
             self._vx = self._vy = 0.0
+            self.save()          # 弹射落点立即保存，重启不回跳
 
     def _play_bounce_sound(self):
         self.play_sound("click")
 
-    # ---------- 鼠标/拖拽/边缘 ----------
     # ---------- 鼠标/拖拽/边缘 ----------
     def _clamp_pos(self, x, y):
         screen = QApplication.primaryScreen()
@@ -2139,7 +2478,6 @@ class PetWindow(QWidget):
             self.move(nx, ny)
             self.sync_settings_panel_position()
             self.sync_bubble_position()
-            self.sync_hud_position()
             self._drag_pos = event.globalPos()
             self._reset_idle_timers()
             event.accept()
@@ -2208,7 +2546,24 @@ class PetWindow(QWidget):
         self._animate_squish(1.05, 0.88, 90)
 
     def _release_squish(self):
-        self._animate_squish(1.0, 1.0, 240, QEasingCurve.OutBack)
+        """松手：多关键帧 Q 弹（压扁 → 弹起过冲 → 回落），底部坐标不变。"""
+        if self._squish_anim is not None:
+            self._squish_anim.stop()
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(520)
+        anim.valueChanged.connect(self._on_squash_frame)
+        anim.finished.connect(self._on_squash_done)
+        anim.start()
+        self._squish_anim = anim
+
+    def _on_squash_frame(self, t):
+        sy, sx = squash_at(float(t))
+        self.label.setGeometry(self._squish_rect(sx, sy))
+
+    def _on_squash_done(self):
+        self.label.setGeometry(self._squish_rect(1.0, 1.0))
 
     # ---------- 设置面板 ----------
     def open_settings(self, global_pos=None):
@@ -2254,9 +2609,6 @@ class PetWindow(QWidget):
             y = self.y() + self.height() + 8
         self.bubble.move(max(0, x), max(0, y))
 
-    def sync_hud_position(self):
-        pass
-
     # ---------- 设置方法 ----------
     def set_size_level(self, level):
         self.size_level = max(SIZE_MIN, min(SIZE_MAX, int(level)))
@@ -2268,10 +2620,13 @@ class PetWindow(QWidget):
 
     def set_volume(self, val):
         self.volume = max(0, min(100, int(val)))
+        for player in self._sfx_pool:
+            player.setVolume(self.volume)
         self.save()
 
     def set_sound_mode(self, mode):
-        self.sound_mode = mode if mode in ("duck", "fx1") else "duck"
+        self.sound_mode = mode if mode in self.sounds else "duck"
+        self._preload_sound()
         self.save()
 
     def set_line_source(self, source):
@@ -2391,14 +2746,6 @@ class PetWindow(QWidget):
         self.sound_enabled = bool(enabled)
         self.save()
 
-    def set_per_turn_on(self, enabled):
-        self.per_turn_on = bool(enabled)
-        self.save()
-
-    def set_peak_mode(self, mode):
-        self.peak_mode = mode if mode in ("default", "liangwen", "qiangqiang") else "default"
-        self.save()
-
     def set_always_on_top(self, enabled):
         self.always_on_top = enabled
         flags = Qt.FramelessWindowHint | Qt.Tool
@@ -2418,6 +2765,64 @@ class PetWindow(QWidget):
         self._update_hud()
         self.save()
 
+    def save_rules(self):
+        """保存规则（写配置 + 回写外部规则文件）。"""
+        self.save()
+        write_rules_file(self.app_rules)
+
+    def reload_external(self):
+        """重新加载台词文件与规则文件。"""
+        ensure_lines_file(RANDOM_TEXTS)
+        self.lines_file = load_lines_file()
+        file_rules = load_rules_file()
+        if file_rules:
+            self.app_rules = file_rules
+        self.save_rules()
+        self.show_bubble_quick("台词与规则已重新加载")
+        self._log(f"重新加载外部文件：台词 {len(self.lines_file)} 条，规则 {len(self.app_rules)} 条")
+
+    def open_lines_file(self):
+        ensure_lines_file(RANDOM_TEXTS)
+        try:
+            subprocess.Popen(["notepad", LINES_PATH])
+        except Exception:
+            pass
+
+    def open_rules_file(self):
+        if not os.path.exists(RULES_PATH):
+            write_rules_file(self.app_rules)
+        try:
+            subprocess.Popen(["notepad", RULES_PATH])
+        except Exception:
+            pass
+
+    def beautify_drive_icons(self):
+        """一键把磁盘图标换成大肥鱼（写盘根 desktop.ini，需要管理员权限）。"""
+        png = ""
+        for e in self.expressions:
+            if e["name"] == "v1_fatfish":
+                png = e["path"]
+                break
+        if not png:
+            self.show_bubble_quick("没有找到大肥鱼素材")
+            return
+        drives = list(os.listdrives()) if hasattr(os, "listdrives") else ["C:\\"]
+        if not drives:
+            return
+        drive, ok = QInputDialog.getItem(
+            self, "美化磁盘图标", "选择要美化的磁盘（需要管理员权限）：", drives, 0, False)
+        if not ok or not drive:
+            return
+        ico = os.path.join(drive.rstrip("\\") + "\\", "dshw_fish.ico")
+        if not build_fish_ico(png, ico):
+            self.show_bubble_quick("图标生成失败")
+            return
+        if apply_drive_icon(drive, ico):
+            self._log(f"磁盘图标美化：{drive}")
+            self.show_bubble_quick(f"{drive} 图标已美化，刷新/重启后生效")
+        else:
+            self.show_bubble_quick("写入失败：请以管理员身份运行桌宠后重试")
+
     def toggle_hud(self):
         self.set_hud_visible(not self.hud_visible)
 
@@ -2431,6 +2836,7 @@ class PetWindow(QWidget):
 
     def clear_custom_sound(self):
         self.custom_sound_path = ""
+        self._preload_sound()
         self.save()
         self.show_bubble_quick("自定义音效已清除")
 
@@ -2447,8 +2853,25 @@ class PetWindow(QWidget):
 
     def set_autostart(self, enabled):
         self.autostart = bool(enabled)
-        set_autostart(self.autostart)
+        ok = set_autostart(self.autostart)
+        if ok:
+            self.autostart = is_autostart_enabled()      # 以注册表真实结果为准
+        else:
+            self.show_bubble_quick("开机自启设置失败（注册表不可写）")
         self.save()
+        self._log(f"开机自启：{'开启' if self.autostart else '关闭'}"
+                  f"（注册表写入{'成功' if ok else '失败'}）")
+
+    def _sync_autostart(self):
+        """启动自愈：开启自启时确保注册表指向当前程序；路径失效则修正。"""
+        real = is_autostart_enabled()
+        cmd_ok = autostart_command_matches()
+        if self.autostart and not cmd_ok:
+            if set_autostart(True):
+                self._log("开机自启已写入/修正为当前程序：" + get_autostart_command())
+        self.autostart = is_autostart_enabled()
+        if real and not cmd_ok:
+            self._log("原开机自启指向旧路径，已更新")
 
     def _refresh_mirror(self):
         if self._base_pixmap is not None:
@@ -2490,8 +2913,6 @@ class PetWindow(QWidget):
         cfg["volume"] = self.volume
         cfg["custom_sound_path"] = self.custom_sound_path
         cfg["autostart"] = self.autostart
-        cfg["per_turn_on"] = self.per_turn_on
-        cfg["peak_mode"] = self.peak_mode
         cfg["hud_visible"] = self.hud_visible
         cfg["hud_abbrev"] = self.hud_abbrev
         cfg["snap_enabled"] = self.snap_enabled
@@ -2537,11 +2958,35 @@ class PetWindow(QWidget):
         update_act.triggered.connect(self.check_update)
         log_act = menu.addAction("打开运行日志")
         log_act.triggered.connect(self.open_log)
+        menu.addSeparator()
+        about_act = menu.addAction("关于小鲸鱼")
+        about_act.triggered.connect(self.show_about)
+        qq_act = menu.addAction(f"加入 QQ 群（{QQ_GROUP}）")
+        qq_act.triggered.connect(self.open_qq_group)
+        drive_act = menu.addAction("美化磁盘图标（大肥鱼）")
+        drive_act.triggered.connect(self.beautify_drive_icons)
+        menu.addSeparator()
         quit_act = menu.addAction("退出")
         quit_act.triggered.connect(QApplication.quit)
         self.tray_menu = menu
         self.tray.setContextMenu(menu)
         self.tray.show()
+
+    def show_about(self):
+        QMessageBox.information(
+            self, "关于小鲸鱼桌宠",
+            f"DeepSeek 小鲸鱼桌宠  v{LOCAL_VERSION}\n\n"
+            f"作者：DeepSeek-Whale-Desktop-Pet 团队\n"
+            f"QQ 交流群：{QQ_GROUP}\n"
+            f"开源仓库：{UPDATE_URL}\n\n"
+            f"感谢开源：MeteorNOX / comreade-123 / JiafishNB")
+
+    def open_qq_group(self):
+        try:
+            webbrowser.open(QQ_GROUP_URL)
+            self.show_bubble_quick(f"QQ 群号：{QQ_GROUP}")
+        except Exception:
+            self.show_bubble_quick(f"QQ 群号：{QQ_GROUP}")
 
     def toggle_visible(self):
         if self.isVisible():

@@ -5,7 +5,7 @@ a = Analysis(
     ['whale_pet.py'],
     pathex=[],
     binaries=[],
-    datas=[('expressions', 'expressions')],
+    datas=[('expressions', 'expressions'), ('sounds', 'sounds')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
