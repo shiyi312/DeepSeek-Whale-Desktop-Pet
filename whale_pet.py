@@ -53,6 +53,10 @@ SFX_POOL_SIZE = 5
 QQ_GROUP = "254668799"
 QQ_GROUP_URL = "https://qun.qq.com/qq/254668799"
 
+# 喂食大目录时的扫描上限（避免遍历几万文件卡住界面）
+SCAN_LIMIT_FILES = 20000
+SCAN_LIMIT_SECONDS = 3.0
+
 # 深色列表样式（控件级设置，确保 viewport 与滚动条都是深色，不用系统原生外观）
 LIST_QSS = """
 QListWidget { background: rgba(15,23,42,0.55); border: 1.5px solid rgba(148,163,184,0.30);
@@ -1988,12 +1992,17 @@ class PetWindow(QWidget):
         self.bubble.show_lines([text], 2500, pet=self)
 
     def _scan_path_size(self, path):
+        """统计路径大小，返回 (字节数, 是否因目录过大被截断)。
+        大目录限量扫描（文件数或耗时达上限即停止），避免界面卡死。"""
         if os.path.isfile(path):
             try:
-                return os.path.getsize(path)
+                return os.path.getsize(path), False
             except OSError:
-                return 0
+                return 0, False
         total = 0
+        count = 0
+        capped = False
+        start = time.monotonic()
         try:
             for root, _dirs, files in os.walk(path):
                 for fn in files:
@@ -2001,9 +2010,15 @@ class PetWindow(QWidget):
                         total += os.path.getsize(os.path.join(root, fn))
                     except OSError:
                         pass
+                    count += 1
+                    if count >= SCAN_LIMIT_FILES or time.monotonic() - start > SCAN_LIMIT_SECONDS:
+                        capped = True
+                        break
+                if capped:
+                    break
         except OSError:
             pass
-        return total
+        return total, capped
 
     def feed_path(self, path):
         if not os.path.exists(path):
@@ -2011,12 +2026,17 @@ class PetWindow(QWidget):
         is_dir = os.path.isdir(path)
         name = os.path.basename(path) or path
         kind = "文件夹" if is_dir else "文件"
-        size = self._scan_path_size(path)
+        size, capped = self._scan_path_size(path)
         tokens = max(1, size // 1024)
+        note = ""
+        if capped:
+            note = (f"\n\nℹ️ 该{kind}内容很多，已只统计前 {SCAN_LIMIT_FILES:,} 个文件"
+                    f"（约 {SCAN_LIMIT_SECONDS:.0f} 秒内）来换算 Token；\n"
+                    f"喂食仍会删除整个{kind}。")
         ret = QMessageBox.question(
             self, "喂食 DeepSeek",
             f"是否将该{kind}喂给 DeepSeek？\n\n{kind}: {name}\n大小: {size:,} B\n"
-            f"按 1KB = 1 Token 换算，将增加 {tokens:,} Token\n\n"
+            f"按 1KB = 1 Token 换算，将增加 {tokens:,} Token{note}\n\n"
             f"⚠️ 喂食后会真正删除该{kind}，确定继续吗？",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ret != QMessageBox.Yes:
