@@ -1048,13 +1048,15 @@ class SettingsPanel(QWidget):
         self.mirror_check = QCheckBox("贴边自动镜像")
         self.mirror_check.setChecked(pet.auto_mirror)
         self.mirror_check.toggled.connect(self._ok(self._on_mirror))
-        self.lock_check = QCheckBox("固定位置（防止误拖）")
+        self.lock_check = QCheckBox("固定位置")
+        self.lock_check.setToolTip("防止误拖动")
         self.lock_check.setChecked(pet.lock_position)
         self.lock_check.toggled.connect(self._ok(self._on_lock))
         self.top_check = QCheckBox("始终置顶")
         self.top_check.setChecked(pet.always_on_top)
         self.top_check.toggled.connect(self._ok(self._on_top))
-        self.snap_check = QCheckBox("拖拽吸附屏幕边缘")
+        self.snap_check = QCheckBox("拖拽吸附边缘")
+        self.snap_check.setToolTip("松手时角色中心在屏幕某侧 1/4 区域内即贴边")
         self.snap_check.setChecked(pet.snap_enabled)
         self.snap_check.toggled.connect(self._ok(self._on_snap))
 
@@ -1073,10 +1075,12 @@ class SettingsPanel(QWidget):
         self.token_check = QCheckBox("开启 Token 系统")
         self.token_check.setChecked(pet.token_enabled)
         self.token_check.toggled.connect(self._ok(self._on_token_enabled))
-        self.hud_check = QCheckBox("显示 Token HUD（桌宠下方）")
+        self.hud_check = QCheckBox("显示 HUD")
+        self.hud_check.setToolTip("在角色下方显示 Token / 时间卡片")
         self.hud_check.setChecked(pet.hud_visible)
         self.hud_check.toggled.connect(self._ok(self._on_hud_visible))
-        self.hud_abbrev_check = QCheckBox("HUD 数字缩写（如 388.4W）")
+        self.hud_abbrev_check = QCheckBox("数字缩写")
+        self.hud_abbrev_check.setToolTip("大数字缩写显示，例如 388.4W")
         self.hud_abbrev_check.setChecked(pet.hud_abbrev)
         self.hud_abbrev_check.toggled.connect(self._ok(self._on_hud_abbrev))
         self.hud_token_check = QCheckBox("显示 Token")
@@ -1085,7 +1089,7 @@ class SettingsPanel(QWidget):
         self.hud_time_check = QCheckBox("显示时间")
         self.hud_time_check.setChecked(pet.hud_show_time)
         self.hud_time_check.toggled.connect(self._ok(self._on_hud_show_time))
-        self.hud_date_check = QCheckBox("显示日期与星期")
+        self.hud_date_check = QCheckBox("显示日期星期")
         self.hud_date_check.setChecked(pet.hud_show_date)
         self.hud_date_check.toggled.connect(self._ok(self._on_hud_show_date))
         self.token_label = QLabel(f"当前 Token：{pet.token:,}")
@@ -1466,10 +1470,15 @@ class SettingsPanel(QWidget):
         self.tabs.setFixedHeight(page_h + bar_h + 8)
         self.setMinimumHeight(0)
         self.setMaximumHeight(16777215)
-        need = self.card.sizeHint().height() + 24      # 卡片内容 + 面板外边距
+        # 面板宽度也要跟着内容：避免右侧控件被裁（留边距 + 滚动条余量）
+        need_w = self.card.minimumSizeHint().width() + 24 + 14
+        self.setFixedWidth(max(500, need_w))
+        # +24 面板外边距，+8 余量：避免"差几个像素"导致底部内容被裁掉
+        need = self.card.sizeHint().height() + 24 + 8
         screen = QApplication.primaryScreen()
         avail = screen.availableGeometry().height() if screen else 1080
-        limit = max(360, avail - 60)
+        # 限高阈值放宽（原来 -60 太紧，会让系统页底部被裁）
+        limit = max(360, avail - 16)
         self.low_res_scroll = need > limit
         self.setFixedHeight(min(need, limit))
 
