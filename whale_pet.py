@@ -437,7 +437,10 @@ def build_fish_ico(png_path, ico_path, size=256):
 
 
 def refresh_icon_cache():
-    """刷新图标缓存：ie4uinit + SHChangeNotify（都不重启 explorer，不会黑屏）。"""
+    """刷新图标缓存：ie4uinit + SHChangeNotify（都不重启 explorer，不会黑屏）。
+
+    注意（实测结论）：盘符图标是缓存在**登录会话**里的，上面这些通知刷不动它，
+    只有注销/重启才会重新读取 —— 所以美化/恢复后必须如实告诉用户这一点。"""
     ok = False
     try:
         subprocess.Popen(["ie4uinit.exe", "-show"],
@@ -453,13 +456,64 @@ def refresh_icon_cache():
     return ok
 
 
+DRIVE_ICON_BAK = os.path.join(os.path.expanduser("~"), ".dshw-drive-icon.ico")
+
+
+def drive_letter_of(path):
+    """从 "D:\\" 这样的盘根取出盘符（返回 "D"）；不是单纯盘根则返回 ""。"""
+    text = str(path or "").strip().rstrip("\\/")
+    if len(text) == 2 and text[1] == ":" and text[0].isalpha():
+        return text[0].upper()
+    return ""
+
+
+def set_drive_icon_registry(letter, ico_path):
+    """把盘符图标写进当前用户注册表（HKCU，不需要管理员权限）。
+
+    这是 Windows 另一个盘符图标入口，好处是图标文件放在用户目录里，
+    即使磁盘根的图标文件被删掉，也不会像 C 盘那次一样变成「白纸」坏图标。"""
+    try:
+        if winreg is None or not letter:
+            return False
+        key_path = (r"Software\Microsoft\Windows\CurrentVersion\Explorer"
+                    rf"\DriveIcons\{letter}\DefaultIcon")
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path, 0,
+                                winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"{ico_path},0")
+        return True
+    except Exception:
+        return False
+
+
+def clear_drive_icon_registry(letter):
+    """删掉上面写的盘符图标设置；返回是否真的删掉了。"""
+    try:
+        if winreg is None or not letter:
+            return False
+        base = r"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons"
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, rf"{base}\{letter}\DefaultIcon")
+        except FileNotFoundError:
+            return False
+        for key in (rf"{base}\{letter}", base):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)   # 顺手收掉空壳父键
+            except OSError:
+                pass
+        return True
+    except Exception:
+        return False
+
+
 def apply_drive_icon(drive, ico_src, set_root_system=False):
     """设置磁盘图标。返回 (成功?, 原因)。
 
     写入 desktop.ini（主）+ autorun.inf/icon.ico（兼容），全程只给文件设属性。
-    注意：Windows 11 的**驱动器根目录**常常还要求盘根带「系统」属性才显示自定义图标，
+    注意：Windows 11 的**驱动器根目录**常常还要求盘根带「系统 + 只读」属性才显示自定义图标，
     这一步需要管理员权限，因此由 set_root_system 控制（管理员模式下自动开启）。
-    重复应用时目标文件已带隐藏属性，会挡住覆盖，所以写入前先清属性。"""
+    重复应用时目标文件已带隐藏属性，会挡住覆盖，所以写入前先清属性。
+    另外会顺手写一份当前用户的注册表盘符图标（HKCU，不需要管理员）作为补充。
+    实测结论：图标是否**立刻**变化取决于登录会话缓存 —— 不生效时注销/重启一次即可。"""
     import shutil
     root = drive.rstrip("\\") + "\\"
     ico = os.path.join(root, "icon.ico")
@@ -513,9 +567,19 @@ def apply_drive_icon(drive, ico_src, set_root_system=False):
     if not ok_ini:
         return False, "desktop.ini 已写入但属性设置失败（图标可能不刷新）"
     if set_root_system:
-        # 部分 Win11 电脑要求盘根带「系统」属性（需管理员）
-        if not set_file_attrs(root, hidden=False, system=True):
+        # 部分 Win11 电脑要求盘根带「系统」+「只读」属性才显示自定义图标（需管理员）。
+        # hidden 传 None：不动盘根原有的隐藏属性。
+        if not set_file_attrs(root, hidden=None, system=True, readonly=True):
             return False, "已写入，但设置磁盘根目录属性失败（需要管理员权限）"
+    letter = drive_letter_of(root)
+    if letter:
+        # 额外挂一份注册表图标（HKCU，不需要管理员）：图标文件放用户目录，
+        # 磁盘根的图标文件就算被删掉，也不会留下「白纸」坏图标
+        try:
+            shutil.copyfile(ico_src, DRIVE_ICON_BAK)
+            set_drive_icon_registry(letter, DRIVE_ICON_BAK)
+        except OSError:
+            pass
     if is_admin():
         # 管理员身份写入的文件会被标成 High 完整性（No-Write-Up），
         # 之后普通权限的桌宠连删都删不掉（点「恢复默认图标」会报拒绝访问）。
@@ -550,6 +614,9 @@ def remove_drive_icon(drive):
                 busy.append(name)
             else:
                 denied.append(p)
+
+    if clear_drive_icon_registry(drive_letter_of(root)):
+        removed.append("注册表图标项")
 
     note = ""
     if denied and not is_admin():
@@ -4190,6 +4257,11 @@ class PetWindow(QWidget):
             self._log(f"磁盘图标恢复：{drive} - {msg}")
             if ok:
                 self.show_bubble_quick(msg[:40])
+                QMessageBox.information(
+                    self, "已恢复默认图标",
+                    f"{drive} {msg}\n\n"
+                    "⚠️ 如果「此电脑」里图标还没变：Windows 把盘符图标缓存在**登录会话**里，"
+                    "F5、重启资源管理器都刷不掉 —— **注销一次或重启电脑**就会变回默认图标。")
             else:
                 # 需要用户动手时（比如去点 UAC 弹窗）不能只弹个几十字就消失的气泡
                 QMessageBox.warning(self, "恢复默认图标", msg)
@@ -4214,11 +4286,13 @@ class PetWindow(QWidget):
             self.show_bubble_quick(f"{drive} 图标已设置")
             if not is_admin():
                 ret = QMessageBox.question(
-                    self, "图标没变化？试试管理员模式",
-                    "已设置完成（已刷新图标缓存，不会黑屏）。\n\n"
-                    "如果资源管理器里图标仍然没变：部分 Windows 11 电脑要求**磁盘根目录本身**"
-                    "带「系统」属性才显示自定义图标，而这一步需要管理员权限。\n\n"
-                    "是否以管理员身份重新启动桌宠，然后自动用管理员模式重新设置？",
+                    self, "图标已设置",
+                    f"{drive} 图标已设置完成。\n\n"
+                    "⚠️ 如果「此电脑」里图标还没变，这是正常的：Windows 把盘符图标缓存在"
+                    "**登录会话**里，F5、重启资源管理器都刷不掉 —— **注销一次或重启电脑**就会显示。\n\n"
+                    "另外：部分 Windows 11 电脑还要求磁盘根目录带「系统 + 只读」属性才认自定义图标，"
+                    "这一步需要管理员权限。\n\n"
+                    "是否现在以管理员身份重启桌宠，并自动补上盘根属性后重新设置？",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if ret == QMessageBox.Yes:
                     self.relaunch_as_admin()
@@ -4226,7 +4300,8 @@ class PetWindow(QWidget):
                 QMessageBox.information(
                     self, "磁盘图标已设置",
                     f"{drive} 磁盘图标已设置成功（管理员模式，已包含盘根属性）。\n\n"
-                    "已刷新图标缓存；若资源管理器里还没变，在磁盘上按 F5 刷新一下即可。\n\n"
+                    "⚠️ 图标没变的话：**注销一次或重启电脑**就会生效"
+                    "（Windows 会缓存盘符图标，F5 / 重启资源管理器都刷不掉）。\n\n"
                     "想还原：再点一次「美化磁盘图标」选「恢复默认图标」。")
         else:
             self._log(f"磁盘图标：应用失败（{drive}）- {reason}")

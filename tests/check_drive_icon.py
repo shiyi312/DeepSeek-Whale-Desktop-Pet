@@ -152,6 +152,41 @@ def main():
     assert w.delete_files_elevated([]) == (False, ""), "空列表应直接返回，不去弹 UAC"
     print("3i. 提权删除空列表不弹窗 OK")
 
+    # 3j) 盘符识别：只有真正的盘根才认（临时目录不能被当成盘，否则会乱写注册表）
+    assert w.drive_letter_of("D:\\") == "D"
+    assert w.drive_letter_of("c:") == "C"
+    assert w.drive_letter_of(tmp + "\\") == "", "临时目录不应被当成盘根"
+    assert w.drive_letter_of("") == ""
+    print("3j. 盘符识别 OK（只有真正的盘根才算）")
+
+    # 3k) 注册表盘符图标：写入 / 删除 往返正常（用假盘符 Z，不碰真实磁盘）
+    import winreg
+    assert w.clear_drive_icon_registry("Z") is False, "本来就没有，删除应返回 False"
+    assert w.set_drive_icon_registry("Z", r"C:\x\y.ico") is True, "写注册表失败"
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                        r"Software\Microsoft\Windows\CurrentVersion"
+                        r"\Explorer\DriveIcons\Z\DefaultIcon") as k:
+        val, _ = winreg.QueryValueEx(k, "")
+    assert val == r"C:\x\y.ico,0", ("注册表值不对", val)
+    assert w.clear_drive_icon_registry("Z") is True, "删除注册表项失败"
+    try:
+        winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                       r"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\Z")
+        raise AssertionError("注册表项没删干净")
+    except FileNotFoundError:
+        pass
+    print("3k. 注册表盘符图标 写入/删除 OK（HKCU，不需要管理员）")
+
+    # 3l) 普通目录：set_root_system 应补「系统+只读」且不动原有的隐藏属性
+    assert w.drive_letter_of(tmp + "\\") == ""
+    a_before = ctypes.windll.kernel32.GetFileAttributesW(tmp)
+    okA, rA = w.apply_drive_icon(tmp + "\\", ico, set_root_system=True)
+    assert okA, ("补盘根属性时应用失败", rA)
+    a3 = ctypes.windll.kernel32.GetFileAttributesW(tmp)
+    assert (a3 & 0x04) and (a3 & 0x01), ("应补上「系统+只读」属性", a3)
+    assert (a3 & 0x02) == (a_before & 0x02), ("不应改动原有的隐藏属性", a_before, a3)
+    print("3l. 补盘根属性 OK（系统+只读，隐藏属性保持原样）")
+
     # 4) 无权限路径：必须返回明确原因，而不是假成功
     bad_dir = r"C:\Windows\System32\__dshw_no_perm__"
     ok2, reason2 = w.build_fish_ico(png, os.path.join(bad_dir, "x.ico"))
