@@ -22,6 +22,11 @@ RULE = {"match": "edge", "text": "上网敲代码了嘛~", "chance": 100, "enabl
 
 def main():
     app = QApplication(sys.argv)
+    # 用「不含触发冷却」的配置构造桌宠：这样第 1 项测的是代码默认值 0（每次都触发），
+    # 不会被用户自己设置过的冷却秒数影响（此前该项会因为用户配置而误报失败）
+    base_cfg = dict(w.load_config())
+    base_cfg.pop("app_rule_cooldown", None)
+    w.load_config = lambda: dict(base_cfg)
     pet = w.PetWindow()
     fired = []
     logs = []

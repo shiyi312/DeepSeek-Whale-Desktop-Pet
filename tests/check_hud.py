@@ -75,13 +75,15 @@ def main():
     print("5. 时间按秒刷新 OK")
 
     # 6) 字号随角色变大，且有下限（不会小到看不清）
+    #    实现见 _hud_font_px：max(13, min(18, size_px * 0.065))，即 13~18px
+    #    （4940abb 特意从 15~24 调回 13~18，避免缩放屏上 HUD 过大）
     pet.set_size_level(w.SIZE_MIN, save=False)
     small = pet._hud_font_px()
     pet.set_size_level(w.SIZE_MAX, save=False)
     big = pet._hud_font_px()
-    assert small >= 15, ("最小字号过低", small)
-    assert big > small and big <= 24, (small, big)
-    print(f"6. 字号 OK（最小档 {small}px → 最大档 {big}px）")
+    assert small >= 13, ("最小字号低于 13px（会看不清）", small)
+    assert big > small and big <= 18, ("字号未随体型缩放或超出 13~18px 区间", small, big)
+    print(f"6. 字号 OK（最小档 {small}px → 最大档 {big}px，区间 13~18px）")
 
     # 7) 全部关掉时不显示 HUD（窗口自动收缩），不会留白框
     pet.hud_show_token = pet.hud_show_time = pet.hud_show_date = False
