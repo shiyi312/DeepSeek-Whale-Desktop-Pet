@@ -373,57 +373,87 @@ def build_fish_ico(png_path, ico_path, size=256):
     return True, ""
 
 
+def refresh_shell_icons():
+    """通知资源管理器刷新图标缓存（SHChangeNotify）。
+    不会重启 explorer，因此**不会黑屏**。"""
+    try:
+        SHCNE_ASSOCCHANGED = 0x08000000
+        SHCNF_IDLIST = 0x0000
+        ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
+        return True
+    except Exception:
+        return False
+
+
 def apply_drive_icon(drive, ico_src):
-    """用 autorun.inf + icon.ico 设置磁盘图标。返回 (成功?, 原因)。
-    做法对标 DeepSeek-WindowsTable-game.io：只复制文件 + 设隐藏属性，
-    不改动盘根属性，因此不需要管理员权限。
-    注意：重复应用时目标文件已带"隐藏+系统"属性，会挡住覆盖，
-    所以每次写入前先去掉这些属性（否则第二次会报"无权限"）。"""
+    """设置磁盘图标。返回 (成功?, 原因)。
+
+    采用双保险，且**全程不需要管理员权限**：
+    · `desktop.ini`（含 IconResource）—— Windows 10/11 固定磁盘图标的可靠方式；
+      关键是**只给 desktop.ini 自身设隐藏+系统属性，绝不改盘根属性**
+      （旧版就是多做了"给盘根设系统属性"这一步才总报无权限）。
+    · `autorun.inf` + `icon.ico` —— 对可移动磁盘/旧系统仍有效，作为兼容补充。
+    重复应用时目标文件已带隐藏属性，会挡住覆盖，因此写入前先清属性。"""
     import shutil
     root = drive.rstrip("\\") + "\\"
     ico = os.path.join(root, "icon.ico")
     inf = os.path.join(root, "autorun.inf")
-    for path in (ico, inf):
+    ini = os.path.join(root, "desktop.ini")
+    for path in (ico, inf, ini):
         if os.path.exists(path):
             set_file_attrs(path, hidden=False, system=False)
 
-    def _write_ico():
-        shutil.copyfile(ico_src, ico)
+    def _write(path, data, mode="wb"):
+        with open(path, mode) as f:
+            f.write(data)
 
+    # 1) icon.ico
     try:
-        _write_ico()
+        shutil.copyfile(ico_src, ico)
     except PermissionError:
-        try:                      # 被占用时删除后重建
+        try:
             os.remove(ico)
-            _write_ico()
+            shutil.copyfile(ico_src, ico)
         except OSError:
-            return False, f"无法写入 {ico}（文件被占用或被安全软件拦截）"
+            return False, f"无法写入 {ico}（被占用或被安全软件拦截）"
     except OSError as e:
         return False, f"写入 icon.ico 失败：{e}"
 
+    # 2) desktop.ini（UTF-16，Win 原生；中文/绝对路径都能识别）
+    ini_text = ("[.ShellClassInfo]\r\n"
+                f"IconResource={ico},0\r\n"
+                "ConfirmFileOp=0\r\n")
     try:
-        with open(inf, "w", encoding="ascii", newline="\r\n") as f:
-            f.write("[autorun]\nICON = icon.ico,0\n")
+        _write(ini, ini_text.encode("utf-16"))
     except PermissionError:
         try:
-            os.remove(inf)
-            with open(inf, "w", encoding="ascii", newline="\r\n") as f:
-                f.write("[autorun]\nICON = icon.ico,0\n")
+            os.remove(ini)
+            _write(ini, ini_text.encode("utf-16"))
         except OSError:
-            return False, f"无法写入 {inf}（文件被占用或被安全软件拦截）"
+            return False, f"无法写入 {ini}（被占用或被安全软件拦截）"
     except OSError as e:
-        return False, f"写入 autorun.inf 失败：{e}"
+        return False, f"写入 desktop.ini 失败：{e}"
+
+    # 3) autorun.inf（兼容补充）
+    try:
+        _write(inf, b"[autorun]\r\nICON = icon.ico,0\r\n")
+    except OSError:
+        pass       # 兼容项失败不影响 desktop.ini 生效
 
     set_file_attrs(ico, hidden=True, system=False)
     set_file_attrs(inf, hidden=True, system=False)
+    ok_ini = set_file_attrs(ini, hidden=True, system=True)
+    if not ok_ini:
+        return False, "desktop.ini 已写入但属性设置失败（图标可能不刷新）"
+    refresh_shell_icons()
     return True, ""
 
 
 def remove_drive_icon(drive):
-    """恢复默认磁盘图标：删除我们放过的文件（含旧版 desktop.ini 遗留）。"""
+    """恢复默认磁盘图标：删除我们放过的文件（含旧版遗留）。"""
     root = drive.rstrip("\\") + "\\"
     removed = []
-    for name in ("autorun.inf", "icon.ico", "dshw_fish.ico", "desktop.ini"):
+    for name in ("desktop.ini", "autorun.inf", "icon.ico", "dshw_fish.ico"):
         p = os.path.join(root, name)
         if not os.path.exists(p):
             continue
@@ -433,6 +463,7 @@ def remove_drive_icon(drive):
             removed.append(name)
         except OSError as e:
             return False, f"删除 {name} 失败：{e}"
+    refresh_shell_icons()
     if removed:
         return True, "已删除：" + "、".join(removed) + "（重启后恢复默认图标）"
     return True, "该磁盘没有需要删除的图标文件"
@@ -3603,17 +3634,14 @@ class PetWindow(QWidget):
             return
         ok, reason = apply_drive_icon(drive, tmp_ico)
         if ok:
-            self._log(f"磁盘图标应用成功：{drive}（icon.ico + autorun.inf）")
-            ret = QMessageBox.question(
-                self, "磁盘图标已写入",
-                f"{drive} 磁盘图标已写入成功。\n\n"
-                "图标需要刷新资源管理器或重启电脑后才会显示。\n"
-                "是否现在刷新资源管理器？（桌面会闪一下，不影响其他程序）",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-            if ret == QMessageBox.Yes:
-                self.refresh_explorer()
-            else:
-                self.show_bubble_quick("已写入，重启电脑后生效")
+            self._log(f"磁盘图标应用成功：{drive}（desktop.ini + autorun.inf）")
+            self.show_bubble_quick(f"{drive} 图标已设置")
+            QMessageBox.information(
+                self, "磁盘图标已设置",
+                f"{drive} 磁盘图标已设置成功。\n\n"
+                "已通知 Windows 刷新图标缓存（不会黑屏、无需重启电脑）。\n"
+                "若资源管理器里还没变化，在磁盘上按一下 F5 刷新即可。\n\n"
+                "想还原：再点一次「美化磁盘图标」选「恢复默认图标」。")
         else:
             self._log(f"磁盘图标：应用失败（{drive}）- {reason}")
             self.show_bubble_quick(f"失败：{reason[:32]}")
@@ -3625,18 +3653,6 @@ class PetWindow(QWidget):
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if ret == QMessageBox.Yes:
                     self.relaunch_as_admin()
-
-    def refresh_explorer(self):
-        """重启资源管理器，让磁盘图标立即生效（桌面会闪一下）。"""
-        try:
-            subprocess.run(["taskkill", "/f", "/im", "explorer.exe"], capture_output=True)
-            time.sleep(0.8)
-            subprocess.Popen(["explorer.exe"])
-            self._log("已重启资源管理器以刷新磁盘图标")
-            self.show_bubble_quick("已刷新资源管理器，看看磁盘图标变了吗")
-        except Exception as e:
-            self._log(f"刷新资源管理器失败: {e!r}")
-            self.show_bubble_quick("刷新失败，请重启电脑后查看")
 
     def relaunch_as_admin(self):
         """以管理员身份重新启动自己（弹 UAC），成功后退出当前实例。"""

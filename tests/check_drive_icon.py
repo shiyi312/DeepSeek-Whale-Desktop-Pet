@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """磁盘图标与气泡方向自测：
 1) 磁盘图标：无权限时给出明确原因（不再假成功/静默失败）
 2) desktop.ini 用 UTF-16 编码（中文路径才有效）
@@ -10,6 +10,7 @@
 """
 import os
 import sys
+import ctypes
 import tempfile
 import time
 
@@ -42,23 +43,30 @@ def main():
     assert w.set_file_attrs(ico, hidden=True, system=True), "设置文件属性失败"
     print(f"2. ICO 生成 + 文件属性 OK（{os.path.getsize(ico)} 字节，已设隐藏+系统）")
 
-    # 3) 用 autorun.inf + icon.ico 方案（普通权限即可，对标参考项目）
+    # 3) desktop.ini + autorun.inf + icon.ico 三件套（普通权限即可）
+    root_attrs_before = ctypes.windll.kernel32.GetFileAttributesW(tmp)
     ok, reason = w.apply_drive_icon(tmp + "\\", ico)
     inf = os.path.join(tmp, "autorun.inf")
+    ini = os.path.join(tmp, "desktop.ini")
     dst_ico = os.path.join(tmp, "icon.ico")
     assert ok, ("应用磁盘图标失败", reason)
-    assert os.path.exists(inf) and os.path.exists(dst_ico), "autorun.inf / icon.ico 未生成"
-    text = open(inf, encoding="ascii", errors="replace").read()
-    assert "[autorun]" in text and "ICON" in text and "icon.ico" in text, text
-    assert open(dst_ico, "rb").read()[:4] == b"\x00\x00\x01\x00", "icon.ico 不是合法 ICO"
-    import ctypes as _ct
-    attrs = _ct.windll.kernel32.GetFileAttributesW(inf)
-    assert attrs != -1 and (attrs & 0x02), "autorun.inf 应设为隐藏属性"
-    print("3. autorun.inf + icon.ico 方案 OK（普通权限即可，文件已设隐藏）")
+    assert os.path.exists(ini) and os.path.exists(inf) and os.path.exists(dst_ico), \
+        "desktop.ini / autorun.inf / icon.ico 未全部生成"
+    raw = open(ini, "rb").read()
+    assert raw[:2] in (b"\xff\xfe", b"\xfe\xff"), "desktop.ini 应为 UTF-16 编码"
+    text = open(ini, encoding="utf-16").read()
+    assert "[.ShellClassInfo]" in text and "IconResource=" in text, text
+    attrs_ini = ctypes.windll.kernel32.GetFileAttributesW(ini)
+    assert attrs_ini != -1 and (attrs_ini & 0x02) and (attrs_ini & 0x04), \
+        "desktop.ini 应带隐藏+系统属性（Windows 才认）"
+    root_attrs_after = ctypes.windll.kernel32.GetFileAttributesW(tmp)
+    assert root_attrs_before == root_attrs_after, \
+        "不应改动磁盘根目录属性（这正是旧版需要管理员权限的原因）"
+    print("3. desktop.ini(UTF-16) + autorun.inf + icon.ico OK，且未改动盘根属性")
 
     # 3b) 恢复默认图标：能删除放置的文件
     ok3, msg3 = w.remove_drive_icon(tmp + "\\")
-    assert ok3 and not os.path.exists(inf) and not os.path.exists(dst_ico), ("恢复失败", msg3)
+    assert ok3 and not os.path.exists(ini) and not os.path.exists(inf), ("恢复失败", msg3)
     print(f"3b. 恢复默认图标 OK（{msg3[:30]}）")
 
     # 3c) 重复应用：文件已带隐藏/系统属性时，第二次仍须成功（回归用例）
@@ -67,6 +75,10 @@ def main():
     ok5, r5 = w.apply_drive_icon(tmp + "\\", ico)
     assert ok5, ("重复应用失败（隐藏属性挡住了覆盖）", r5)
     print("3c. 重复应用 OK（会自动清除属性后覆盖，不再报无权限）")
+
+    # 3d) 刷新通知：SHChangeNotify 可用（不重启 explorer，不黑屏）
+    assert w.refresh_shell_icons() is True, "SHChangeNotify 调用失败"
+    print("3d. 图标刷新通知 OK（SHChangeNotify，不黑屏、不重启资源管理器）")
     w.remove_drive_icon(tmp + "\\")
 
     # 4) 无权限路径：必须返回明确原因，而不是假成功
