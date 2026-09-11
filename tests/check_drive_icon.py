@@ -77,8 +77,8 @@ def main():
     print("3c. 重复应用 OK（会自动清除属性后覆盖，不再报无权限）")
 
     # 3d) 刷新通知：SHChangeNotify 可用（不重启 explorer，不黑屏）
-    assert w.refresh_shell_icons() is True, "SHChangeNotify 调用失败"
-    print("3d. 图标刷新通知 OK（SHChangeNotify，不黑屏、不重启资源管理器）")
+    assert w.refresh_icon_cache() is True, "图标缓存刷新失败"
+    print("3d. 图标缓存刷新 OK（ie4uinit + SHChangeNotify，不黑屏）")
     w.remove_drive_icon(tmp + "\\")
 
     # 4) 无权限路径：必须返回明确原因，而不是假成功

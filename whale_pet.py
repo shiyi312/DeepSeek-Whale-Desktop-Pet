@@ -373,27 +373,30 @@ def build_fish_ico(png_path, ico_path, size=256):
     return True, ""
 
 
-def refresh_shell_icons():
-    """通知资源管理器刷新图标缓存（SHChangeNotify）。
-    不会重启 explorer，因此**不会黑屏**。"""
+def refresh_icon_cache():
+    """刷新图标缓存：ie4uinit + SHChangeNotify（都不重启 explorer，不会黑屏）。"""
+    ok = False
     try:
-        SHCNE_ASSOCCHANGED = 0x08000000
-        SHCNF_IDLIST = 0x0000
-        ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
-        return True
+        subprocess.Popen(["ie4uinit.exe", "-show"],
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        ok = True
     except Exception:
-        return False
+        pass
+    try:
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)   # SHCNE_ASSOCCHANGED
+        ok = True
+    except Exception:
+        pass
+    return ok
 
 
-def apply_drive_icon(drive, ico_src):
+def apply_drive_icon(drive, ico_src, set_root_system=False):
     """设置磁盘图标。返回 (成功?, 原因)。
 
-    采用双保险，且**全程不需要管理员权限**：
-    · `desktop.ini`（含 IconResource）—— Windows 10/11 固定磁盘图标的可靠方式；
-      关键是**只给 desktop.ini 自身设隐藏+系统属性，绝不改盘根属性**
-      （旧版就是多做了"给盘根设系统属性"这一步才总报无权限）。
-    · `autorun.inf` + `icon.ico` —— 对可移动磁盘/旧系统仍有效，作为兼容补充。
-    重复应用时目标文件已带隐藏属性，会挡住覆盖，因此写入前先清属性。"""
+    写入 desktop.ini（主）+ autorun.inf/icon.ico（兼容），全程只给文件设属性。
+    注意：Windows 11 的**驱动器根目录**常常还要求盘根带「系统」属性才显示自定义图标，
+    这一步需要管理员权限，因此由 set_root_system 控制（管理员模式下自动开启）。
+    重复应用时目标文件已带隐藏属性，会挡住覆盖，所以写入前先清属性。"""
     import shutil
     root = drive.rstrip("\\") + "\\"
     ico = os.path.join(root, "icon.ico")
@@ -402,10 +405,6 @@ def apply_drive_icon(drive, ico_src):
     for path in (ico, inf, ini):
         if os.path.exists(path):
             set_file_attrs(path, hidden=False, system=False)
-
-    def _write(path, data, mode="wb"):
-        with open(path, mode) as f:
-            f.write(data)
 
     # 1) icon.ico
     try:
@@ -419,16 +418,20 @@ def apply_drive_icon(drive, ico_src):
     except OSError as e:
         return False, f"写入 icon.ico 失败：{e}"
 
-    # 2) desktop.ini（UTF-16，Win 原生；中文/绝对路径都能识别）
+    # 2) desktop.ini：用**相对路径**（驱动器根目录更可靠），UTF-16 编码
     ini_text = ("[.ShellClassInfo]\r\n"
-                f"IconResource={ico},0\r\n"
+                "IconResource=icon.ico,0\r\n"
+                "IconFile=icon.ico\r\n"
+                "IconIndex=0\r\n"
                 "ConfirmFileOp=0\r\n")
     try:
-        _write(ini, ini_text.encode("utf-16"))
+        with open(ini, "wb") as f:
+            f.write(ini_text.encode("utf-16"))
     except PermissionError:
         try:
             os.remove(ini)
-            _write(ini, ini_text.encode("utf-16"))
+            with open(ini, "wb") as f:
+                f.write(ini_text.encode("utf-16"))
         except OSError:
             return False, f"无法写入 {ini}（被占用或被安全软件拦截）"
     except OSError as e:
@@ -436,16 +439,21 @@ def apply_drive_icon(drive, ico_src):
 
     # 3) autorun.inf（兼容补充）
     try:
-        _write(inf, b"[autorun]\r\nICON = icon.ico,0\r\n")
+        with open(inf, "wb") as f:
+            f.write(b"[autorun]\r\nICON = icon.ico,0\r\n")
     except OSError:
-        pass       # 兼容项失败不影响 desktop.ini 生效
+        pass
 
     set_file_attrs(ico, hidden=True, system=False)
     set_file_attrs(inf, hidden=True, system=False)
     ok_ini = set_file_attrs(ini, hidden=True, system=True)
     if not ok_ini:
         return False, "desktop.ini 已写入但属性设置失败（图标可能不刷新）"
-    refresh_shell_icons()
+    if set_root_system:
+        # 部分 Win11 电脑要求盘根带「系统」属性（需管理员）
+        if not set_file_attrs(root, hidden=False, system=True):
+            return False, "已写入，但设置磁盘根目录属性失败（需要管理员权限）"
+    refresh_icon_cache()
     return True, ""
 
 
@@ -463,7 +471,7 @@ def remove_drive_icon(drive):
             removed.append(name)
         except OSError as e:
             return False, f"删除 {name} 失败：{e}"
-    refresh_shell_icons()
+    refresh_icon_cache()
     if removed:
         return True, "已删除：" + "、".join(removed) + "（重启后恢复默认图标）"
     return True, "该磁盘没有需要删除的图标文件"
@@ -3632,16 +3640,27 @@ class PetWindow(QWidget):
             self._log(f"磁盘图标：生成失败 - {reason}")
             self.show_bubble_quick(f"图标生成失败：{reason[:34]}")
             return
-        ok, reason = apply_drive_icon(drive, tmp_ico)
+        ok, reason = apply_drive_icon(drive, tmp_ico, set_root_system=is_admin())
         if ok:
-            self._log(f"磁盘图标应用成功：{drive}（desktop.ini + autorun.inf）")
+            self._log(f"磁盘图标应用成功：{drive}"
+                      f"（desktop.ini + autorun.inf，管理员模式={is_admin()}）")
             self.show_bubble_quick(f"{drive} 图标已设置")
-            QMessageBox.information(
-                self, "磁盘图标已设置",
-                f"{drive} 磁盘图标已设置成功。\n\n"
-                "已通知 Windows 刷新图标缓存（不会黑屏、无需重启电脑）。\n"
-                "若资源管理器里还没变化，在磁盘上按一下 F5 刷新即可。\n\n"
-                "想还原：再点一次「美化磁盘图标」选「恢复默认图标」。")
+            if not is_admin():
+                ret = QMessageBox.question(
+                    self, "图标没变化？试试管理员模式",
+                    "已设置完成（已刷新图标缓存，不会黑屏）。\n\n"
+                    "如果资源管理器里图标仍然没变：部分 Windows 11 电脑要求**磁盘根目录本身**"
+                    "带「系统」属性才显示自定义图标，而这一步需要管理员权限。\n\n"
+                    "是否以管理员身份重新启动桌宠，然后自动用管理员模式重新设置？",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if ret == QMessageBox.Yes:
+                    self.relaunch_as_admin()
+            else:
+                QMessageBox.information(
+                    self, "磁盘图标已设置",
+                    f"{drive} 磁盘图标已设置成功（管理员模式，已包含盘根属性）。\n\n"
+                    "已刷新图标缓存；若资源管理器里还没变，在磁盘上按 F5 刷新一下即可。\n\n"
+                    "想还原：再点一次「美化磁盘图标」选「恢复默认图标」。")
         else:
             self._log(f"磁盘图标：应用失败（{drive}）- {reason}")
             self.show_bubble_quick(f"失败：{reason[:32]}")
