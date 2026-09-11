@@ -644,15 +644,9 @@ class BubbleWidget(QWidget):
         self.font_size = 13
         self.scale = 1.0
         self._timer.timeout.connect(self.hide)
-        # 柔和阴影（让气泡更立体、不贴背景）
-        try:
-            shadow = QGraphicsDropShadowEffect(self)
-            shadow.setBlurRadius(18)
-            shadow.setOffset(0, 4)
-            shadow.setColor(QColor(0, 0, 0, 90))
-            self.setGraphicsEffect(shadow)
-        except Exception:
-            pass
+        # 注意：不要用 QGraphicsDropShadowEffect —— 在透明分层窗口上会导致
+        # UpdateLayeredWindowIndirect 失败（气泡显示残缺/残留旧画面）。
+        # 柔和阴影改为在 paintEvent 里自绘。
 
     def apply_color(self, key):
         self.color_key = key if key in BUBBLE_COLORS else "blue"
@@ -730,6 +724,13 @@ class BubbleWidget(QWidget):
             p.scale(1, -1)
         body = QRectF(5, 5, w - 10, h - tail_zone)
         cx = body.center().x()
+        # 自绘柔和阴影（外层更大更淡 → 内层更浓），避免使用 graphics effect
+        for grow, alpha in ((9, 10), (6, 16), (3, 22)):
+            sp = QPainterPath()
+            sp.addEllipse(body.adjusted(-grow, -grow + 2, grow, grow + 2))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, alpha))
+            p.drawPath(sp)
         # 椭圆与小尖尾巴合并成一个轮廓，描边只走外圈（避免出现"V"形内线）
         body_path = QPainterPath()
         body_path.addEllipse(body)
