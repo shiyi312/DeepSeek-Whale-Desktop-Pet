@@ -1009,7 +1009,7 @@ class Card(QFrame):
         super().__init__(parent)
         self.setObjectName("card")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 14)
+        lay.setContentsMargins(12, 10, 12, 11)
         lay.setSpacing(9)
         head = QHBoxLayout()
         head.setSpacing(6)
@@ -1031,7 +1031,7 @@ class Card(QFrame):
             d.setWordWrap(True)
             lay.addWidget(d)
         self.body = QVBoxLayout()
-        self.body.setSpacing(9)
+        self.body.setSpacing(7)
         lay.addLayout(self.body)
         self.keywords = f"{title} {desc} {tip}"
 
@@ -1098,13 +1098,13 @@ class SettingsPanel(QWidget):
             QLabel#tokenLabel { color: #fbbf24; font-size: 16px; font-weight: 700; }
             QComboBox, QLineEdit {
                 background: rgba(255,255,255,0.10); border: 1.5px solid rgba(255,255,255,0.22);
-                border-radius: 10px; padding: 9px 12px; color: white; font-size: 16px; font-weight: 600;
+                border-radius: 10px; padding: 7px 11px; color: white; font-size: 16px; font-weight: 600;
             }
             QComboBox QAbstractItemView { background: #0f172a; color: white; selection-background-color: #2563eb;
                 font-size: 15px; padding: 6px; border-radius: 10px; }
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #7c3aed);
-                border: none; border-radius: 11px; padding: 9px 12px; color: white;
+                border: none; border-radius: 10px; padding: 8px 12px; color: white;
                 font-size: 16px; font-weight: 700;
             }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #8b5cf6); }
@@ -1159,7 +1159,7 @@ class SettingsPanel(QWidget):
         # ============ 互动页 ============
         page_interact = QWidget()
         p1 = QVBoxLayout(page_interact)
-        p1.setSpacing(12)
+        p1.setSpacing(8)
 
         self.expr_combo = NoWheelComboBox()
         for e in pet.expressions:
@@ -1280,7 +1280,7 @@ class SettingsPanel(QWidget):
         # ============ Token 页 ============
         page_token = QWidget()
         p2 = QVBoxLayout(page_token)
-        p2.setSpacing(12)
+        p2.setSpacing(8)
         self.token_check = QCheckBox("开启 Token 系统")
         self.token_check.setChecked(pet.token_enabled)
         self.token_check.toggled.connect(self._ok(self._on_token_enabled))
@@ -1332,7 +1332,7 @@ class SettingsPanel(QWidget):
         # ============ 气泡页 ============
         page_bubble = QWidget()
         p3 = QVBoxLayout(page_bubble)
-        p3.setSpacing(12)
+        p3.setSpacing(8)
         self.line_mode = NoWheelComboBox()
         self.line_mode.addItem("今日心情", "mood")
         self.line_mode.addItem("随机台词", "random")
@@ -1351,7 +1351,7 @@ class SettingsPanel(QWidget):
         self.custom_empty = QLabel("⚠️ 自定义台词库为空，请先添加")
         self.custom_empty.setStyleSheet("color:#fca5a5; font-size:14px; font-weight:700;")
         self.custom_list = QListWidget()
-        self.custom_list.setMaximumHeight(120)
+        self.custom_list.setMaximumHeight(104)
         self.custom_list.setWordWrap(True)
         self.custom_list.setSpacing(2)
         self.custom_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1442,7 +1442,7 @@ class SettingsPanel(QWidget):
         # ============ 系统页 ============
         page_system = QWidget()
         p4 = QVBoxLayout(page_system)
-        p4.setSpacing(12)
+        p4.setSpacing(8)
         self.auto_rotate_check = QCheckBox("自动轮换表情")
         self.auto_rotate_check.setChecked(pet.auto_rotate)
         self.auto_rotate_check.toggled.connect(self._ok(self._on_auto_rotate_setting))
@@ -1492,7 +1492,7 @@ class SettingsPanel(QWidget):
         rule_btn_row.addWidget(toggle_rule_btn)
         rule_btn_row.addWidget(del_rule_btn)
         self.rule_list = QListWidget()
-        self.rule_list.setMaximumHeight(146)
+        self.rule_list.setMaximumHeight(88)
         self.rule_list.setWordWrap(True)
         self.rule_list.setSpacing(2)
         self.rule_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1527,11 +1527,22 @@ class SettingsPanel(QWidget):
         self.autostart_check = QCheckBox("开机自启")
         self.autostart_check.setChecked(is_autostart_enabled())
         self.autostart_check.toggled.connect(self._ok(self._on_autostart))
+        self.fullscreen_hide_check = QCheckBox("全屏时自动隐藏")
+        self.fullscreen_hide_check.setToolTip("玩全屏游戏或看全屏视频时临时隐藏桌宠，退出全屏后自动恢复")
+        self.fullscreen_hide_check.setChecked(pet.hide_in_fullscreen)
+        self.fullscreen_hide_check.toggled.connect(self._ok(self._on_fullscreen_hide))
+        self.auto_update_check = QCheckBox("自动检查更新")
+        self.auto_update_check.setToolTip("启动后与每隔一段时间自动检查 GitHub 新版本并提示（默认每 24 小时）")
+        self.auto_update_check.setChecked(pet.auto_check_update)
+        self.auto_update_check.toggled.connect(self._ok(self._on_auto_update))
 
-        card_tools = Card("🛠️ 系统与工具", "开机自启、更新、音效与磁盘图标",
-                          tip="开机自启会随系统启动并自动修正失效路径；\n"
-                              "美化磁盘图标需要以管理员身份运行才生效")
-        card_tools.add(self.autostart_check)
+        card_tools = Card("🛠️ 系统与工具", "开机自启、更新、全屏隐藏与磁盘图标",
+                          tip="全屏隐藏：玩游戏时桌宠不会挡住画面\n"
+                              "自动检查更新：发现新版本会弹窗询问是否下载\n"
+                              "美化磁盘图标：写入 desktop.ini，普通权限即可；"
+                              "Win11 若图标不显示可选用管理员模式重试")
+        card_tools.add_checks([self.autostart_check, self.fullscreen_hide_check,
+                               self.auto_update_check])
         # 系统操作按钮：两列网格，避免一排全宽按钮显得拥挤
         sys_grid = QGridLayout()
         sys_grid.setSpacing(8)
@@ -1560,13 +1571,10 @@ class SettingsPanel(QWidget):
             f'<a href="{UPDATE_URL}" style="color:#93c5fd; text-decoration:none;">'
             f'小鲸鱼桌宠 v{LOCAL_VERSION} · 访问更新源</a>')
         about_link.setOpenExternalLinks(True)
-        author_label = QLabel("作者：shiyi312（辻弌）")
-        author_label.setStyleSheet("color:#94a3b8; font-size:13px;")
-        qq_label = QLabel(f"QQ 交流群：{QQ_GROUP}")
-        qq_label.setStyleSheet("color:#94a3b8; font-size:13px;")
+        info_label = QLabel(f"作者：shiyi312（辻弌）　·　QQ 群：{QQ_GROUP}")
+        info_label.setStyleSheet("color:#94a3b8; font-size:13px;")
         about_card.add(about_link)
-        about_card.add(author_label)
-        about_card.add(qq_label)
+        about_card.add(info_label)
         p4.addWidget(about_card)
         p4.addStretch()
 
@@ -1663,10 +1671,22 @@ class SettingsPanel(QWidget):
         return self.pet._guard(getattr(fn, "__name__", "面板操作"), fn)
 
     def _on_search(self, text):
-        """按关键字过滤卡片（匹配卡片标题/说明/内部控件文字）。"""
+        """全局搜索：跨所有标签页匹配卡片，并自动切到第一个命中的页。"""
         key = text.strip().lower()
-        for card in self._cards:
-            card.setVisible(not key or key in card.keywords.lower())
+        first_idx = None
+        for idx in range(self.tabs.count()):
+            page = self.tabs.widget(idx)
+            hit_in_page = False
+            for card in page.findChildren(Card):
+                hit = (not key) or (key in card.keywords.lower())
+                card.setVisible(hit)
+                if hit and key:
+                    hit_in_page = True
+            if hit_in_page and first_idx is None:
+                first_idx = idx
+        if key and first_idx is not None and self.tabs.currentIndex() != first_idx:
+            self.tabs.setCurrentIndex(first_idx)      # 自动跳到第一个命中的页
+        self._fit_to_page()
 
     def _on_tab_changed(self, index):
         """记住上次所在的标签页，并让面板高度贴合该页内容。"""
@@ -1675,23 +1695,24 @@ class SettingsPanel(QWidget):
         self._fit_to_page()
 
     def _fit_to_page(self):
-        """面板高度 = 当前页内容高度（每页各自铺满、不留大片空白）；
-        若内容超过屏幕可用高度则限高，超出部分用滚动条查看。"""
+        """面板尺寸：宽度按**所有页的最大需求**固定一次（切页不再变胖变瘦）；
+        高度按当前页内容，上限为屏幕 85%（配合紧凑排版，尽量不用滚动）。"""
         page = self.tabs.currentWidget()
         if page is None:
             return
+        if not getattr(self, "_width_fixed", False):
+            max_w = max((c.minimumSizeHint().width() for c in self._cards), default=418)
+            self.setFixedWidth(max(470, max_w + 38))
+            self._width_fixed = True
         page_h = page.sizeHint().height()
         bar_h = self.tabs.tabBar().sizeHint().height()
         self.tabs.setFixedHeight(page_h + bar_h + 8)
         self.setMinimumHeight(0)
         self.setMaximumHeight(16777215)
-        # 面板尺寸（回到小巧的原有观感）：宽度固定 470；
-        # 高度 = 当前页内容高度，但最多占屏幕 70%（超出滚动），不会占满整屏
-        self.setFixedWidth(max(470, self.card.minimumSizeHint().width() + 38))
         need = self.card.sizeHint().height() + 24 + 8
         screen = QApplication.primaryScreen()
         geo = screen.availableGeometry() if screen else None
-        limit = max(360, int(geo.height() * 0.70)) if geo else 900
+        limit = max(400, int(geo.height() * 0.92)) if geo else 1000
         self.low_res_scroll = need > limit
         self.setFixedHeight(min(need, limit))
 
@@ -1830,6 +1851,13 @@ class SettingsPanel(QWidget):
 
     def _on_autostart(self, enabled):
         self.pet.set_autostart(enabled)
+
+    def _on_fullscreen_hide(self, enabled):
+        self.pet.hide_in_fullscreen = bool(enabled)
+        self.pet.save()
+
+    def _on_auto_update(self, enabled):
+        self.pet.set_auto_check_update(enabled)
 
     def _on_check_update(self):
         self.pet.check_update()
@@ -2030,6 +2058,12 @@ class PetWindow(QWidget):
         self.panel_tab = max(0, min(3, int(self.cfg.get("panel_tab", 0))))
         self.snap_enabled = bool(self.cfg.get("snap_enabled", True))
         self.app_monitor_enabled = bool(self.cfg.get("app_monitor_enabled", True))
+        self.hide_in_fullscreen = bool(self.cfg.get("hide_in_fullscreen", True))
+        self._hidden_by_fullscreen = False
+        self.auto_check_update = bool(self.cfg.get("auto_check_update", True))
+        self.update_check_interval_hours = max(1, min(168, int(self.cfg.get("update_check_interval_hours", 24))))
+        self._update_tag = ""
+        self._auto_check = False
         self.app_rule_cooldown = max(0, min(600, int(self.cfg.get("app_rule_cooldown", 0))))
         self.wander_delay = max(0, min(600, int(self.cfg.get("wander_delay", 60))))
         self.evade_range = max(100, min(1500, int(self.cfg.get("evade_range", 500))))
@@ -2126,6 +2160,8 @@ class PetWindow(QWidget):
         self._load_sounds()
         self._sync_autostart()
         self._reset_idle_timers()
+        # 启动 5 秒后自动检查一次更新（异步、不阻塞启动、静默失败）
+        QTimer.singleShot(5000, self._guard("自动检查更新", lambda: self.check_update(auto=True)))
         self._log(f"小鲸鱼桌宠启动完成（初始化耗时 {int((time.monotonic() - _t0) * 1000)} ms）")
 
     # ---------- 音效（播放器池：每声完整播放、零延迟、最多池上限层不糊） ----------
@@ -2725,7 +2761,67 @@ class PetWindow(QWidget):
         else:
             self._rules_mtime = mtime
 
+    def _is_fullscreen_foreground(self):
+        """前台窗口是否铺满整个屏幕（游戏/全屏视频）→ 用于临时隐藏桌宠，避免遮挡。"""
+        try:
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            user32.GetForegroundWindow.restype = wintypes.HWND
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return False
+            if user32.IsWindowVisible(hwnd) == 0:
+                return False
+            rect = wintypes.RECT()
+            user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+            user32.GetWindowRect.restype = wintypes.BOOL
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return False
+            screen = QApplication.primaryScreen()
+            if not screen:
+                return False
+            g = screen.geometry()
+            # 窗口覆盖整个屏幕（容差 2px）即视为全屏
+            return (rect.left <= g.left() + 2 and rect.top <= g.top() + 2
+                    and rect.right >= g.right() - 2 and rect.bottom >= g.bottom() - 2)
+        except Exception:
+            return False
+
+    def _fullscreen_tick(self):
+        """全屏应用时临时隐藏桌宠与气泡；退出全屏后自动恢复。"""
+        if not self.hide_in_fullscreen:
+            return
+        full = self._is_fullscreen_foreground()
+        if full and self.isVisible():
+            self._hidden_by_fullscreen = True
+            try:
+                self.bubble.hide()
+            except Exception:
+                pass
+            self.hide()
+            self._log("检测到全屏应用，已临时隐藏桌宠（退出全屏后自动恢复）")
+        elif not full and getattr(self, "_hidden_by_fullscreen", False):
+            self._hidden_by_fullscreen = False
+            self.show()
+            self.raise_()
+            self._log("全屏应用已退出，桌宠恢复显示")
+
+    def _update_schedule_tick(self):
+        """按间隔自动检查更新（默认每 24 小时一次，可在设置里关闭）。"""
+        if not self.auto_check_update:
+            return
+        if getattr(self, "_checking_update", False):
+            return
+        interval = max(1, int(self.update_check_interval_hours)) * 3600
+        now = time.time()
+        if now - float(self.cfg.get("last_update_check", 0) or 0) >= interval:
+            self.cfg["last_update_check"] = now
+            self.save()
+            self.check_update(auto=True)
+
     def _monitor_tick(self):
+        self._fullscreen_tick()
+        self._update_schedule_tick()
         if not self.app_monitor_enabled:
             return
         self._maybe_reload_rules()
@@ -2766,9 +2862,10 @@ class PetWindow(QWidget):
             self.show_bubble_quick(text)
             return
 
-    def check_update(self):
+    def check_update(self, auto=False):
         if getattr(self, "_checking_update", False):
             return
+        self._auto_check = bool(auto)
         self._checking_update = True
         self.show_bubble_quick("正在检查更新...")
         threading.Thread(target=self._check_update_worker, daemon=True).start()
@@ -2800,9 +2897,12 @@ class PetWindow(QWidget):
                 return tuple(parts[:3])
 
             if _key(tag) > _key(local):
-                self.update_done.emit(f"发现新版本 v{tag}，正在打开更新页面~")
-                webbrowser.open(UPDATE_URL)
+                self._update_tag = tag
+                self.update_done.emit(f"发现新版本 v{tag}")
+                if not getattr(self, "_auto_check", False):
+                    webbrowser.open(UPDATE_URL)      # 手动检查：直接打开下载页
             else:
+                self._update_tag = ""
                 self.update_done.emit(f"已经是最新版本啦（v{LOCAL_VERSION}）")
         except Exception as e:
             self._log(f"检查更新失败: {e}")
@@ -2821,7 +2921,28 @@ class PetWindow(QWidget):
             self._checking_update = False
 
     def _on_update_done(self, msg):
-        self.show_bubble_quick(msg)
+        self._log(f"检查更新：{msg}")
+        tag = getattr(self, "_update_tag", "")
+        if getattr(self, "_auto_check", False) and tag:
+            # 自动检查：只在发现新版本时提示一次，不自动打开浏览器、不打扰
+            if tag == (self.cfg.get("skipped_version") or ""):
+                self.show_bubble_quick(f"新版本 v{tag} 可用（你已选择忽略）")
+                return
+            ret = QMessageBox.question(
+                self, "发现新版本",
+                f"小鲸鱼桌宠新版本 v{tag} 已发布（当前版本 v{LOCAL_VERSION}）。\n\n"
+                "是否前往 GitHub 下载更新？\n"
+                "（选“否”则本次忽略，下次启动不再提示这个版本）",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if ret == QMessageBox.Yes:
+                webbrowser.open(UPDATE_URL)
+                self.show_bubble_quick(f"正在打开下载页 v{tag}")
+            else:
+                self.cfg["skipped_version"] = tag
+                self.save()
+                self.show_bubble_quick("已忽略本次更新提示")
+        else:
+            self.show_bubble_quick(msg)
 
     def choose_custom_sound(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -3566,6 +3687,10 @@ class PetWindow(QWidget):
         self.evade_range = max(100, min(1500, int(px)))
         self.save()
 
+    def set_auto_check_update(self, enabled):
+        self.auto_check_update = bool(enabled)
+        self.save()
+
     def save_rules(self):
         """保存规则（写配置 + 回写外部规则文件）。"""
         self.save()
@@ -3796,6 +3921,9 @@ class PetWindow(QWidget):
         cfg["panel_tab"] = self.panel_tab
         cfg["snap_enabled"] = self.snap_enabled
         cfg["app_monitor_enabled"] = self.app_monitor_enabled
+        cfg["hide_in_fullscreen"] = self.hide_in_fullscreen
+        cfg["auto_check_update"] = self.auto_check_update
+        cfg["update_check_interval_hours"] = self.update_check_interval_hours
         cfg["app_rule_cooldown"] = self.app_rule_cooldown
         cfg["wander_delay"] = self.wander_delay
         cfg["evade_range"] = self.evade_range

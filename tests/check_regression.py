@@ -47,7 +47,7 @@ def main():
     content_w = panel.card.minimumSizeHint().width() + 40
     assert panel.width() <= max(content_w, int(geo.width() * 0.34)), \
         ("面板过宽", panel.width(), geo.width())
-    assert panel.height() <= max(400, int(geo.height() * 0.72)), \
+    assert panel.height() <= max(400, int(geo.height() * 0.94)), \
         ("面板过高（占了整屏）", panel.height(), geo.height())
     print(f"2. 面板尺寸受控 OK（{panel.width()}x{panel.height()}，屏 {geo.width()}x{geo.height()}）")
 

@@ -180,7 +180,8 @@ def main():
     app.processEvents()
     print("6. 下拉框生效 OK（气泡颜色 → HUD 主题联动）")
 
-    # 7) 点击有效性：+520W 真的加到 Token
+    # 7) 点击有效性：+520W 真的加到 Token（先打开 Token 系统，避免受用户配置影响）
+    pet.token_enabled = True
     before = pet.token
     for btn in panel.findChildren(QPushButton):
         if "+520W" in btn.text():
