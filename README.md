@@ -1,8 +1,8 @@
-# 🐳 DeepSeek 小鲸鱼桌宠（Whale Desktop Pet）
+﻿# 🐳 DeepSeek 小鲸鱼桌宠（Whale Desktop Pet）
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue) ![GUI](https://img.shields.io/badge/GUI-PyQt5-41b883) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078d6) ![Version](https://img.shields.io/badge/Version-v4.4.0-orange)
 
-**作者：shiyi312**　|　版本：`v4.4.0`　|　[开发者信息](#-开发者信息)
+**作者：shiyi312（辻弌）**　|　版本：`v4.4.0`　|　[开发者信息](#-开发者信息)
 
 ![DSH 小鲸鱼桌宠](assets/DSH2.png)
 

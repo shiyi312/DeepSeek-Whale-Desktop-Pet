@@ -27,7 +27,7 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import (
     QPixmap, QMovie, QIcon, QColor, QPainter, QPen, QBrush,
-    QPainterPath, QFont, QFontMetrics, QTransform, QCursor
+    QPainterPath, QFont, QFontMetrics, QLinearGradient, QTransform, QCursor
 )
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtWidgets import (
@@ -373,28 +373,50 @@ def build_fish_ico(png_path, ico_path, size=256):
     return True, ""
 
 
-def apply_drive_icon(drive, ico_path):
-    """在磁盘根目录写 desktop.ini 指向图标。返回 (成功?, 原因)。
-    注意：desktop.ini 必须用 UTF-16LE 写（Windows 原生支持），
-    用 UTF-8 会导致中文路径解析失败、图标不生效。"""
+def apply_drive_icon(drive, ico_src):
+    """用 autorun.inf + icon.ico 设置磁盘图标。返回 (成功?, 原因)。
+    做法对标 DeepSeek-WindowsTable-game.io：**只复制文件并设隐藏属性，
+    不改动盘根属性**，所以不需要管理员权限
+    （旧版写 desktop.ini 并要求改盘根"系统"属性，因此总因权限失败）。"""
+    import shutil
     root = drive.rstrip("\\") + "\\"
-    ini = os.path.join(root, "desktop.ini")
+    ico = os.path.join(root, "icon.ico")
+    inf = os.path.join(root, "autorun.inf")
     try:
-        if os.path.exists(ini):
-            # 已存在的 desktop.ini 可能带"隐藏+系统"属性，先去掉系统属性再写
-            set_file_attrs(ini, hidden=False, system=False)
-        with open(ini, "w", encoding="utf-16") as f:
-            f.write("[.ShellClassInfo]\n")
-            f.write(f"IconResource={ico_path},0\n")
-    except PermissionError as e:
-        return False, f"无权限写入 {ini}（需要管理员）：{e}"
+        shutil.copyfile(ico_src, ico)
+    except PermissionError:
+        return False, f"无权限写入 {ico}（可能被安全软件拦截）"
     except OSError as e:
-        return False, f"写入 {ini} 失败：{e}"
-    ok_ini = set_file_attrs(ini, hidden=True, system=True)
-    ok_root = set_file_attrs(root, hidden=False, system=True)
-    if not (ok_ini and ok_root):
-        return False, "文件已写入，但属性设置失败（图标可能不刷新）"
+        return False, f"写入 icon.ico 失败：{e}"
+    try:
+        with open(inf, "w", encoding="ascii", newline="\r\n") as f:
+            f.write("[autorun]\nICON = icon.ico,0\n")
+    except PermissionError:
+        return False, f"无权限写入 {inf}（可能被安全软件拦截）"
+    except OSError as e:
+        return False, f"写入 autorun.inf 失败：{e}"
+    set_file_attrs(ico, hidden=True, system=False)
+    set_file_attrs(inf, hidden=True, system=False)
     return True, ""
+
+
+def remove_drive_icon(drive):
+    """恢复默认磁盘图标：删除我们放过的文件（含旧版 desktop.ini 遗留）。"""
+    root = drive.rstrip("\\") + "\\"
+    removed = []
+    for name in ("autorun.inf", "icon.ico", "dshw_fish.ico", "desktop.ini"):
+        p = os.path.join(root, name)
+        if not os.path.exists(p):
+            continue
+        try:
+            set_file_attrs(p, hidden=False, system=False)
+            os.remove(p)
+            removed.append(name)
+        except OSError as e:
+            return False, f"删除 {name} 失败：{e}"
+    if removed:
+        return True, "已删除：" + "、".join(removed) + "（重启后恢复默认图标）"
+    return True, "该磁盘没有需要删除的图标文件"
 
 
 def expr_display_name(raw):
@@ -597,12 +619,21 @@ class BubbleWidget(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.lines = []
         self.color_key = "blue"
-        self.tail_up = False          # True = 气泡在角色下方（尖头朝上）
+        self.tail_up = False          # True = 气泡在角色下方（思考泡泡的圆点朝上）
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self.font_size = 13
         self.scale = 1.0
         self._timer.timeout.connect(self.hide)
+        # 柔和阴影（让气泡更立体、不贴背景）
+        try:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(18)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 90))
+            self.setGraphicsEffect(shadow)
+        except Exception:
+            pass
 
     def apply_color(self, key):
         self.color_key = key if key in BUBBLE_COLORS else "blue"
@@ -632,8 +663,8 @@ class BubbleWidget(QWidget):
             max_w = max(max_w, br.width())
         self._line_rects = line_rects
 
-        w = max(200, min(360, max_w + 60))
-        h = max(80, total_h + 60)
+        w = max(230, min(420, int(max_w * 1.5) + 36))
+        h = max(120, int(total_h * 1.5) + 78)
         self.setFixedSize(w, h)
 
         if pet is not None:
@@ -657,42 +688,50 @@ class BubbleWidget(QWidget):
         self.raise_()
         self._timer.start(duration)
 
-    def _body_rect(self):
-        """气泡主体矩形：尖头朝上时顶部留 14px，朝下时底部留 14px。"""
+    def _text_rect(self):
+        """文字区：椭圆内居中的可读区域（避开圆点区）。"""
         if self.tail_up:
-            return self.rect().adjusted(5, 14, -5, -5)
-        return self.rect().adjusted(5, 5, -5, -14)
+            return QRect(26, 52, self.width() - 52, self.height() - 74)
+        return QRect(26, 18, self.width() - 52, self.height() - 74)
 
     def paintEvent(self, event):
+        """思考泡泡样式（与参考项目一致）：椭圆主体 + 小尾巴 + 两个递减圆点；
+        圆点方向跟着气泡位置走（在角色上方时朝下、在下方时朝上）。"""
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         c = BUBBLE_COLORS.get(self.color_key, BUBBLE_COLORS["blue"])
-        rect = self._body_rect()
+        border = QColor(c["border"])
+        bg = QColor(*c["bg"])
+        w, h = self.width(), self.height()
+        tail_zone = 46                      # 尾巴 + 圆点所占高度
 
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(rect), 18, 18)
-        p.setPen(QPen(QColor(c["border"]), 3))
-        p.setBrush(QBrush(QColor(*c["bg"])))
-        p.drawPath(path)
-
-        # 尖头方向跟着气泡位置走：气泡在角色下方 → 尖头朝上指向角色；在上方 → 朝下
-        cx = rect.left() + rect.width() // 2
-        tail = QPainterPath()
-        if self.tail_up:
-            tail.moveTo(cx - 12, rect.top())
-            tail.lineTo(cx, rect.top() - 14)
-            tail.lineTo(cx + 12, rect.top())
-        else:
-            tail.moveTo(cx - 12, rect.bottom())
-            tail.lineTo(cx, rect.bottom() + 14)
-            tail.lineTo(cx + 12, rect.bottom())
-        p.setPen(QPen(QColor(c["border"]), 3))
-        p.setBrush(QBrush(QColor(*c["bg"])))
-        p.drawPath(tail)
+        p.save()
+        if self.tail_up:                    # 垂直镜像：圆点跑到上方，指向角色
+            p.translate(0, h)
+            p.scale(1, -1)
+        body = QRectF(5, 5, w - 10, h - tail_zone)
+        cx = body.center().x()
+        # 椭圆与小尖尾巴合并成一个轮廓，描边只走外圈（避免出现"V"形内线）
+        body_path = QPainterPath()
+        body_path.addEllipse(body)
+        tail_path = QPainterPath()
+        tail_path.moveTo(cx - 8, body.bottom() - 12)
+        tail_path.lineTo(cx - 1, body.bottom() + 12)
+        tail_path.lineTo(cx + 8, body.bottom() - 12)
+        tail_path.closeSubpath()
+        p.setPen(QPen(border, 3))
+        p.setBrush(QBrush(bg))
+        p.drawPath(body_path.united(tail_path))
+        # 两个递减小圆点（思考泡泡特征）
+        for dx, dy, r in ((-6, 22, 7), (0, 35, 4)):
+            p.setPen(QPen(border, 3))
+            p.setBrush(QBrush(bg))
+            p.drawEllipse(QPointF(cx + dx, body.bottom() + dy), r, r)
+        p.restore()
 
         p.setPen(QColor(c["text"]))
         p.setFont(QFont("Microsoft YaHei", self.font_size))
-        content = QRect(rect.left() + 14, rect.top() + 10, rect.width() - 28, rect.height() - 20)
+        content = self._text_rect()
         line_rects = getattr(self, "_line_rects", [])
         if not line_rects:
             line_rects = [p.fontMetrics().boundingRect(content, Qt.TextWordWrap | Qt.AlignHCenter, line) for line in self.lines]
@@ -888,6 +927,21 @@ class SettingsTitleBar(QWidget):
             self.panel.pet.remember_panel_geometry(self.panel)   # 记住位置，之后不再跟随桌宠
         event.accept()
 
+    def paintEvent(self, event):
+        """标题栏底部的细渐变色带（青 → 紫），提升设计感。"""
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        grad = QLinearGradient(0, 0, self.width(), 0)
+        grad.setColorAt(0.00, QColor(34, 211, 238, 0))
+        grad.setColorAt(0.25, QColor(34, 211, 238, 120))
+        grad.setColorAt(0.62, QColor(124, 58, 237, 120))
+        grad.setColorAt(1.00, QColor(124, 58, 237, 0))
+        band = QPainterPath()
+        band.addRoundedRect(QRectF(18, self.height() - 7, max(10, self.width() - 36), 3), 1.5, 1.5)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(grad))
+        p.drawPath(band)
+
 
 class Card(QFrame):
     """设置面板分区卡片：标题 + 说明 + 可选「?」提示 + 内容区。"""
@@ -976,6 +1030,8 @@ class SettingsPanel(QWidget):
             QLabel#section { font-size: 15px; color: #a5b4fc; font-weight: 700; margin-top: 8px; }
             QFrame#card { background: rgba(255,255,255,0.05);
                 border: 1px solid rgba(148,163,184,0.22); border-radius: 14px; }
+            QFrame#card:hover { background: rgba(255,255,255,0.085);
+                border: 1px solid rgba(148,163,184,0.38); }
             QLabel#cardTitle { font-size: 16px; font-weight: 800; color: #67e8f9; }
             QLabel#cardDesc { font-size: 13px; color: #94a3b8; }
             QLabel#cardTip { background: rgba(148,163,184,0.30); border-radius: 10px;
@@ -1439,15 +1495,18 @@ class SettingsPanel(QWidget):
         card_tools.add_layout(sys_grid)
         p4.addWidget(card_tools)
 
-        about_card = Card("ℹ️ 关于", "版本、更新源与交流群",
+        about_card = Card("ℹ️ 关于", "版本、作者与交流群",
                           tip="点「检查更新」会读取 GitHub Releases 的最新版本号对比")
         about_link = QLabel(
             f'<a href="{UPDATE_URL}" style="color:#93c5fd; text-decoration:none;">'
             f'小鲸鱼桌宠 v{LOCAL_VERSION} · 访问更新源</a>')
         about_link.setOpenExternalLinks(True)
+        author_label = QLabel("作者：shiyi312（辻弌）")
+        author_label.setStyleSheet("color:#94a3b8; font-size:13px;")
         qq_label = QLabel(f"QQ 交流群：{QQ_GROUP}")
         qq_label.setStyleSheet("color:#94a3b8; font-size:13px;")
         about_card.add(about_link)
+        about_card.add(author_label)
         about_card.add(qq_label)
         p4.addWidget(about_card)
         p4.addStretch()
@@ -3480,46 +3539,63 @@ class PetWindow(QWidget):
             pass
 
     def beautify_drive_icons(self):
-        """一键把磁盘图标换成大肥鱼（写盘根 desktop.ini，需要管理员权限）。"""
+        """磁盘图标美化 / 恢复（autorun.inf + icon.ico，普通权限即可）。"""
         png = ""
         for e in self.expressions:
             if e["name"] == "v1_fatfish":
                 png = e["path"]
                 break
+        drives = list(os.listdrives()) if hasattr(os, "listdrives") else ["C:\\"]
+        if not drives:
+            self.show_bubble_quick("没有找到可用磁盘")
+            return
+        drive, ok = QInputDialog.getItem(
+            self, "磁盘图标", "选择磁盘：", drives, 0, False)
+        if not ok or not drive:
+            return
+        # 选择操作：应用 / 恢复
+        box = QMessageBox(self)
+        box.setWindowTitle("磁盘图标")
+        box.setText(f"对 {drive} 要做什么？")
+        apply_btn = box.addButton("应用大肥鱼图标", QMessageBox.AcceptRole)
+        restore_btn = box.addButton("恢复默认图标", QMessageBox.DestructiveRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec_()
+        clicked = box.clickedButton()
+
+        if clicked is restore_btn:
+            ok, msg = remove_drive_icon(drive)
+            self._log(f"磁盘图标恢复：{drive} - {msg}")
+            self.show_bubble_quick(msg[:40])
+            return
+        if clicked is not apply_btn:
+            return
+
         if not png:
             self.show_bubble_quick("没有找到大肥鱼素材")
             return
-        drives = list(os.listdrives()) if hasattr(os, "listdrives") else ["C:\\"]
-        if not drives:
-            return
-        drive, ok = QInputDialog.getItem(
-            self, "美化磁盘图标", "选择要美化的磁盘：", drives, 0, False)
-        if not ok or not drive:
-            return
-        # 需要管理员权限：非管理员时询问是否提权重启（会弹系统授权窗口）
-        if not is_admin():
-            ret = QMessageBox.question(
-                self, "需要管理员权限",
-                "美化磁盘图标需要管理员权限。\n\n"
-                "是否以管理员身份重新启动桌宠？\n"
-                "（会弹出系统的“用户账户控制”窗口，点“是”即可）",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-            if ret == QMessageBox.Yes:
-                self.relaunch_as_admin()
-            return
-        ico = os.path.join(drive.rstrip("\\") + "\\", "dshw_fish.ico")
-        ok, reason = build_fish_ico(png, ico)
+        # 先在临时目录生成 ico（不需要盘根权限），再复制到磁盘根目录
+        tmp_ico = os.path.join(os.environ.get("TEMP", "."), "dshw_fish.ico")
+        ok, reason = build_fish_ico(png, tmp_ico)
         if not ok:
             self._log(f"磁盘图标：生成失败 - {reason}")
-            self.show_bubble_quick(f"图标生成失败：{reason[:36]}")
+            self.show_bubble_quick(f"图标生成失败：{reason[:34]}")
             return
-        ok, reason = apply_drive_icon(drive, ico)
+        ok, reason = apply_drive_icon(drive, tmp_ico)
         if ok:
-            self._log(f"磁盘图标美化成功：{drive}")
-            self.show_bubble_quick(f"{drive} 图标已美化，刷新或重启后生效")
+            self._log(f"磁盘图标应用成功：{drive}")
+            self.show_bubble_quick(f"{drive} 图标已应用，重启电脑后生效")
         else:
-            self._log(f"磁盘图标：写入失败 - {reason}")
-            self.show_bubble_quick(f"写入失败：{reason[:36]}")
+            self._log(f"磁盘图标：应用失败 - {reason}")
+            self.show_bubble_quick(f"失败：{reason[:32]}")
+            if not is_admin():
+                ret = QMessageBox.question(
+                    self, "可以重试",
+                    f"{reason}\n\n是否以管理员身份重启桌宠后重试？\n"
+                    "（会弹出系统“用户账户控制”窗口，点“是”即可）",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if ret == QMessageBox.Yes:
+                    self.relaunch_as_admin()
 
     def relaunch_as_admin(self):
         """以管理员身份重新启动自己（弹 UAC），成功后退出当前实例。"""
@@ -3709,7 +3785,7 @@ class PetWindow(QWidget):
         QMessageBox.information(
             self, "关于小鲸鱼桌宠",
             f"DeepSeek 小鲸鱼桌宠  v{LOCAL_VERSION}\n\n"
-            f"作者：DeepSeek-Whale-Desktop-Pet 团队\n"
+            f"作者：shiyi312（辻弌）\n"
             f"QQ 交流群：{QQ_GROUP}\n"
             f"开源仓库：{UPDATE_URL}\n\n"
             f"感谢开源：MeteorNOX / comreade-123 / JiafishNB")

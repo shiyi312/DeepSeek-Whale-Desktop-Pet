@@ -42,15 +42,24 @@ def main():
     assert w.set_file_attrs(ico, hidden=True, system=True), "设置文件属性失败"
     print(f"2. ICO 生成 + 文件属性 OK（{os.path.getsize(ico)} 字节，已设隐藏+系统）")
 
-    # 3) desktop.ini 用 UTF-16 写（中文路径可解析）
+    # 3) 用 autorun.inf + icon.ico 方案（普通权限即可，对标参考项目）
     ok, reason = w.apply_drive_icon(tmp + "\\", ico)
-    ini = os.path.join(tmp, "desktop.ini")
-    assert os.path.exists(ini), ("desktop.ini 未生成", reason)
-    raw = open(ini, "rb").read()
-    assert raw[:2] in (b"\xff\xfe", b"\xfe\xff"), "desktop.ini 应为 UTF-16 编码"
-    text = open(ini, encoding="utf-16").read()
-    assert "[.ShellClassInfo]" in text and "IconResource=" in text, text
-    print("3. desktop.ini UTF-16 编码 OK（Windows 可正确解析中文路径）")
+    inf = os.path.join(tmp, "autorun.inf")
+    dst_ico = os.path.join(tmp, "icon.ico")
+    assert ok, ("应用磁盘图标失败", reason)
+    assert os.path.exists(inf) and os.path.exists(dst_ico), "autorun.inf / icon.ico 未生成"
+    text = open(inf, encoding="ascii", errors="replace").read()
+    assert "[autorun]" in text and "ICON" in text and "icon.ico" in text, text
+    assert open(dst_ico, "rb").read()[:4] == b"\x00\x00\x01\x00", "icon.ico 不是合法 ICO"
+    import ctypes as _ct
+    attrs = _ct.windll.kernel32.GetFileAttributesW(inf)
+    assert attrs != -1 and (attrs & 0x02), "autorun.inf 应设为隐藏属性"
+    print("3. autorun.inf + icon.ico 方案 OK（普通权限即可，文件已设隐藏）")
+
+    # 3b) 恢复默认图标：能删除放置的文件
+    ok3, msg3 = w.remove_drive_icon(tmp + "\\")
+    assert ok3 and not os.path.exists(inf) and not os.path.exists(dst_ico), ("恢复失败", msg3)
+    print(f"3b. 恢复默认图标 OK（{msg3[:30]}）")
 
     # 4) 无权限路径：必须返回明确原因，而不是假成功
     bad_dir = r"C:\Windows\System32\__dshw_no_perm__"
