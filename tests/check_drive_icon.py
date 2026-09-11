@@ -187,6 +187,14 @@ def main():
     assert (a3 & 0x02) == (a_before & 0x02), ("不应改动原有的隐藏属性", a_before, a3)
     print("3l. 补盘根属性 OK（系统+只读，隐藏属性保持原样）")
 
+    # 3m) 恢复时要把「只读」标记撤掉（应用时补的，恢复就要还原），系统属性不动
+    okB, rB = w.remove_drive_icon(tmp + "\\")
+    assert okB, ("恢复失败", rB)
+    a4 = ctypes.windll.kernel32.GetFileAttributesW(tmp)
+    assert not (a4 & 0x01), ("恢复后「只读」标记应被撤掉", a4)
+    assert (a4 & 0x04), ("「系统」属性不该被顺手删掉", a4)
+    print("3m. 恢复时撤掉「只读」标记 OK（系统属性保留）")
+
     # 4) 无权限路径：必须返回明确原因，而不是假成功
     bad_dir = r"C:\Windows\System32\__dshw_no_perm__"
     ok2, reason2 = w.build_fish_ico(png, os.path.join(bad_dir, "x.ico"))

@@ -617,6 +617,9 @@ def remove_drive_icon(drive):
 
     if clear_drive_icon_registry(drive_letter_of(root)):
         removed.append("注册表图标项")
+    # 应用时给盘根补过「只读」标记（部分 Win11 认图标要用），恢复时一并撤掉；
+    # 需要管理员才能改盘根属性的（比如 C 盘），这里失败也无所谓，不影响图标恢复
+    set_file_attrs(root, hidden=None, system=None, readonly=False)
 
     note = ""
     if denied and not is_admin():
@@ -645,7 +648,7 @@ def remove_drive_icon(drive):
         note = (note + "；" if note else "") + \
             "、".join(busy) + " 正被占用（关掉相关资源管理器窗口后重试）"
     if removed:
-        msg = "已删除：" + "、".join(removed) + "（图标缓存已刷新）"
+        msg = "已删除：" + "、".join(removed) + "（图标会在注销或重启后变回默认）"
         return (not denied), (msg if not note else f"{msg}；{note}")
     if note:
         return False, note
