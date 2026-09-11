@@ -79,23 +79,45 @@ def check_ast_patterns():
     for node in tree.body:                      # 模块级定义/导入都算已知名字
         collect_names(node, module_names)
 
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        assigned = set(module_names)
-        for sub in ast.walk(node):
+    def collect_assigned(fn):
+        """收集一个函数内绑定的所有名字（参数/赋值/import/嵌套定义）。"""
+        names = set()
+        for sub in ast.walk(fn):
             if isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)):
-                assigned.add(sub.id)
+                names.add(sub.id)
             elif isinstance(sub, ast.arg):
-                assigned.add(sub.arg)
+                names.add(sub.arg)
             elif isinstance(sub, (ast.Import, ast.ImportFrom)):
                 for a in sub.names:
-                    assigned.add((a.asname or a.name).split(".")[0])
-        for sub in ast.walk(node):
+                    names.add((a.asname or a.name).split(".")[0])
+            elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
+                    and sub is not fn:
+                names.add(sub.name)
+        return names
+
+    def check_func(fn, inherited):
+        """检查函数体引用的名字是否可见（含闭包外层作用域）。"""
+        visible = set(inherited) | collect_assigned(fn)
+        for sub in ast.walk(fn):
             if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
-                if sub.id not in assigned:
-                    problems.append(f"{sub.lineno}: 函数 {node.name} 中疑似未定义变量 {sub.id}")
+                if sub.id not in visible:
+                    problems.append(f"{sub.lineno}: 函数 {fn.name} 中疑似未定义变量 {sub.id}")
                     break
+        for child in ast.iter_child_nodes(fn):      # 嵌套函数继承当前作用域
+            walk(child, visible)
+
+    def walk(node, inherited):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                check_func(child, inherited)
+            else:
+                walk(child, inherited)
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            check_func(node, module_names)      # 顶层函数：带上模块级名字
+        else:
+            walk(node, module_names)
 
     # 3) 过长的函数（可维护性提示，不算错误）
     long_funcs = []

@@ -61,6 +61,14 @@ def main():
     assert ok3 and not os.path.exists(inf) and not os.path.exists(dst_ico), ("恢复失败", msg3)
     print(f"3b. 恢复默认图标 OK（{msg3[:30]}）")
 
+    # 3c) 重复应用：文件已带隐藏/系统属性时，第二次仍须成功（回归用例）
+    ok4, r4 = w.apply_drive_icon(tmp + "\\", ico)
+    assert ok4, ("第 1 次应用失败", r4)
+    ok5, r5 = w.apply_drive_icon(tmp + "\\", ico)
+    assert ok5, ("重复应用失败（隐藏属性挡住了覆盖）", r5)
+    print("3c. 重复应用 OK（会自动清除属性后覆盖，不再报无权限）")
+    w.remove_drive_icon(tmp + "\\")
+
     # 4) 无权限路径：必须返回明确原因，而不是假成功
     bad_dir = r"C:\Windows\System32\__dshw_no_perm__"
     ok2, reason2 = w.build_fish_ico(png, os.path.join(bad_dir, "x.ico"))

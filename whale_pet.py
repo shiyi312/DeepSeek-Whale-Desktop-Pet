@@ -375,26 +375,45 @@ def build_fish_ico(png_path, ico_path, size=256):
 
 def apply_drive_icon(drive, ico_src):
     """用 autorun.inf + icon.ico 设置磁盘图标。返回 (成功?, 原因)。
-    做法对标 DeepSeek-WindowsTable-game.io：**只复制文件并设隐藏属性，
-    不改动盘根属性**，所以不需要管理员权限
-    （旧版写 desktop.ini 并要求改盘根"系统"属性，因此总因权限失败）。"""
+    做法对标 DeepSeek-WindowsTable-game.io：只复制文件 + 设隐藏属性，
+    不改动盘根属性，因此不需要管理员权限。
+    注意：重复应用时目标文件已带"隐藏+系统"属性，会挡住覆盖，
+    所以每次写入前先去掉这些属性（否则第二次会报"无权限"）。"""
     import shutil
     root = drive.rstrip("\\") + "\\"
     ico = os.path.join(root, "icon.ico")
     inf = os.path.join(root, "autorun.inf")
-    try:
+    for path in (ico, inf):
+        if os.path.exists(path):
+            set_file_attrs(path, hidden=False, system=False)
+
+    def _write_ico():
         shutil.copyfile(ico_src, ico)
+
+    try:
+        _write_ico()
     except PermissionError:
-        return False, f"无权限写入 {ico}（可能被安全软件拦截）"
+        try:                      # 被占用时删除后重建
+            os.remove(ico)
+            _write_ico()
+        except OSError:
+            return False, f"无法写入 {ico}（文件被占用或被安全软件拦截）"
     except OSError as e:
         return False, f"写入 icon.ico 失败：{e}"
+
     try:
         with open(inf, "w", encoding="ascii", newline="\r\n") as f:
             f.write("[autorun]\nICON = icon.ico,0\n")
     except PermissionError:
-        return False, f"无权限写入 {inf}（可能被安全软件拦截）"
+        try:
+            os.remove(inf)
+            with open(inf, "w", encoding="ascii", newline="\r\n") as f:
+                f.write("[autorun]\nICON = icon.ico,0\n")
+        except OSError:
+            return False, f"无法写入 {inf}（文件被占用或被安全软件拦截）"
     except OSError as e:
         return False, f"写入 autorun.inf 失败：{e}"
+
     set_file_attrs(ico, hidden=True, system=False)
     set_file_attrs(inf, hidden=True, system=False)
     return True, ""
@@ -3583,10 +3602,19 @@ class PetWindow(QWidget):
             return
         ok, reason = apply_drive_icon(drive, tmp_ico)
         if ok:
-            self._log(f"磁盘图标应用成功：{drive}")
-            self.show_bubble_quick(f"{drive} 图标已应用，重启电脑后生效")
+            self._log(f"磁盘图标应用成功：{drive}（icon.ico + autorun.inf）")
+            ret = QMessageBox.question(
+                self, "磁盘图标已写入",
+                f"{drive} 磁盘图标已写入成功。\n\n"
+                "图标需要刷新资源管理器或重启电脑后才会显示。\n"
+                "是否现在刷新资源管理器？（桌面会闪一下，不影响其他程序）",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if ret == QMessageBox.Yes:
+                self.refresh_explorer()
+            else:
+                self.show_bubble_quick("已写入，重启电脑后生效")
         else:
-            self._log(f"磁盘图标：应用失败 - {reason}")
+            self._log(f"磁盘图标：应用失败（{drive}）- {reason}")
             self.show_bubble_quick(f"失败：{reason[:32]}")
             if not is_admin():
                 ret = QMessageBox.question(
@@ -3596,6 +3624,18 @@ class PetWindow(QWidget):
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if ret == QMessageBox.Yes:
                     self.relaunch_as_admin()
+
+    def refresh_explorer(self):
+        """重启资源管理器，让磁盘图标立即生效（桌面会闪一下）。"""
+        try:
+            subprocess.run(["taskkill", "/f", "/im", "explorer.exe"], capture_output=True)
+            time.sleep(0.8)
+            subprocess.Popen(["explorer.exe"])
+            self._log("已重启资源管理器以刷新磁盘图标")
+            self.show_bubble_quick("已刷新资源管理器，看看磁盘图标变了吗")
+        except Exception as e:
+            self._log(f"刷新资源管理器失败: {e!r}")
+            self.show_bubble_quick("刷新失败，请重启电脑后查看")
 
     def relaunch_as_admin(self):
         """以管理员身份重新启动自己（弹 UAC），成功后退出当前实例。"""
