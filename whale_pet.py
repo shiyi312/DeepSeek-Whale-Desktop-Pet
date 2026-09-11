@@ -49,7 +49,7 @@ CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".dshw-desktop-pet.json")
 UPDATE_URL = "https://github.com/shiyi312/DeepSeek-Whale-Desktop-Pet"
 LOG_PATH = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "dshw-pet.log")
 
-LOCAL_VERSION = "4.4.0"
+LOCAL_VERSION = "4.4.1"
 LOG_KEEP = 100
 LOG_KEEP_DAYS = 7
 HUD_GAP = 2
@@ -1616,8 +1616,20 @@ class SettingsPanel(QWidget):
         self._hover_timer.setInterval(150)
         self._hover_timer.timeout.connect(self.pet._guard("面板悬停", self._check_hover))
         self._fit_to_page()          # 初始按当前页内容定高
-        self._hover_timer.start()
         self._open_time = time.monotonic()
+        # 悬停轮询只在面板显示期间跑（起停见 showEvent / hideEvent）：
+        # 面板关掉后还挂着每秒 6~7 次的空转没有意义，开多次设置还会越攒越多
+
+    def showEvent(self, event):
+        """面板显示出来才开始悬停轮询（自动关闭靠它）。"""
+        super().showEvent(event)
+        if not self._hover_timer.isActive():
+            self._hover_timer.start()
+
+    def hideEvent(self, event):
+        """面板一关就停掉轮询，避免关掉之后还在后台空转。"""
+        super().hideEvent(event)
+        self._hover_timer.stop()
 
     def _can_autoclose(self):
         """自动关闭保护：正在拖动控件 / 拖动桌宠 / 弹出菜单或对话框时不要关面板。"""
@@ -1963,6 +1975,218 @@ class SettingsPanel(QWidget):
         self.pet.clear_tokens()
         self.token_label.setText(f"当前 Token：{self.pet.token:,}")
 
+# ---------- 前台窗口 / 全屏判定（纯函数 + Win32 采集，可离线单测） ----------
+# "全屏时自动隐藏桌宠"的判定逻辑。旧实现只看"窗口矩形盖住整屏"，于是：
+#   1) 桌面（Progman/WorkerW）本身就铺满整屏 → 刷新桌面/点桌面时桌宠被当成"有全屏应用"而隐藏；
+#   2) 最大化窗口（浏览器等）的矩形同样等于整块显示器 → 一打开浏览器桌宠就消失。
+# 现在把判定拆成纯函数 is_fullscreen_window()（测试可直接喂假数据，
+# 见 tests/check_fullscreen.py），采集 Win32 信息的部分单独放在 foreground_window_info()。
+
+WS_CAPTION = 0x00C00000             # 标题栏（含 WS_BORDER | WS_DLGFRAME）
+WS_THICKFRAME = 0x00040000          # 可调整大小的粗边框
+GWL_STYLE = -16                     # 取窗口样式的索引
+GA_ROOT = 2                         # GetAncestor：取顶层窗口
+MONITOR_DEFAULTTONEAREST = 2        # MonitorFromWindow：取最近的显示器
+FULLSCREEN_TOLERANCE = 2            # 像素容差：吸收边框/DPI 取整误差
+FG_POLL_MS = 250                    # 前台窗口/全屏判定轮询间隔（退出全屏后 ≤0.5s 恢复）
+FULLSCREEN_CONFIRM_TICKS = 2        # 连续几次判定为全屏才隐藏（防抖，切换窗口时不闪）
+MOVE_MS_ACTIVE = 16                 # 移动节拍：真的在动时约 60fps
+MOVE_MS_IDLE = 100                  # 移动节拍：静止时降到 10fps（每秒 60 次空转纯属浪费）
+HWND_TOPMOST = -1                   # SetWindowPos：置于最前
+SWP_NOSIZE = 0x0001                 # 保持尺寸
+SWP_NOMOVE = 0x0002                 # 保持位置
+SWP_NOACTIVATE = 0x0010             # 不抢焦点
+
+# 桌面、任务栏这类 shell 窗口天生铺满屏幕，绝不能被当成"全屏应用"（小写比较）
+SHELL_WINDOW_CLASSES = frozenset({
+    "progman", "workerw", "shelldll_defview",         # 桌面本体（Win10 / Win11）
+    "shell_traywnd", "shell_secondarytraywnd",        # 主屏 / 副屏任务栏
+    "traynotifywnd", "tasklist_thumnail",             # 托盘溢出窗、任务栏缩略图
+    "multitaskingviewframe",                          # 任务视图（Win10）
+    "xamlexplorerhostislandwindow",                   # 任务视图 / Alt+Tab 浮层（Win11）
+})
+
+_win32_api = None                   # user32 原型缓存：只声明一次
+
+
+def _win32():
+    """集中声明 user32 / kernel32 原型（只做一次），返回 {"user32", "kernel32",
+    "get_style", "monitor_info", "wt"}。
+    64 位下句柄不声明类型会被当 int 传递而溢出，直接让整个进程崩掉。"""
+    global _win32_api
+    if _win32_api is not None:
+        return _win32_api
+    from ctypes import wintypes
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    user32 = ctypes.windll.user32
+    for name in ("GetForegroundWindow", "GetShellWindow"):
+        fn = getattr(user32, name)
+        fn.argtypes = []
+        fn.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.IsIconic.restype = wintypes.BOOL
+    user32.IsZoomed.argtypes = [wintypes.HWND]
+    user32.IsZoomed.restype = wintypes.BOOL
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.restype = ctypes.c_int
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = wintypes.HANDLE
+    user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    user32.SetWindowPos.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+    get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+    get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+    get_style.restype = ctypes.c_ssize_t
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _win32_api = {"user32": user32, "kernel32": kernel32, "get_style": get_style,
+                  "monitor_info": MONITORINFO, "wt": wintypes}
+    return _win32_api
+
+
+def _monitor_rect_of(user32, monitor_info, handle):
+    """取显示器句柄的矩形 (left, top, right, bottom)。拿不到返回 None。"""
+    if not handle:
+        return None
+    mi = monitor_info()
+    mi.cbSize = ctypes.sizeof(monitor_info)
+    if not user32.GetMonitorInfoW(handle, ctypes.byref(mi)):
+        return None
+    r = mi.rcMonitor
+    return (r.left, r.top, r.right, r.bottom)
+
+
+def win32_monitor_rect(hwnd):
+    """某个窗口所在显示器的矩形，坐标与窗口矩形同为 Win32 物理像素。
+    高 DPI 缩放或副屏有偏移时，用它才不会和 Qt 的逻辑像素坐标错位。失败返回 None。"""
+    try:
+        api = _win32()
+        user32 = api["user32"]
+        handle = user32.MonitorFromWindow(api["wt"].HWND(hwnd), MONITOR_DEFAULTTONEAREST)
+        return _monitor_rect_of(user32, api["monitor_info"], handle)
+    except Exception:
+        return None
+
+
+def foreground_hwnd():
+    """当前前台窗口句柄（0 表示拿不到）。用于判断焦点是否切换过。"""
+    try:
+        api = _win32()
+        hwnd = api["user32"].GetForegroundWindow()
+        return int(hwnd) if hwnd else 0
+    except Exception:
+        return 0
+
+
+def foreground_window_info(self_pid=None):
+    """采集前台窗口信息（供纯函数 is_fullscreen_window 判定）。失败返回 None。"""
+    try:
+        api = _win32()
+        user32, wt = api["user32"], api["wt"]
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        root = user32.GetAncestor(hwnd, GA_ROOT) or hwnd     # 前台可能是子控件，取顶层窗口
+        shell = user32.GetShellWindow()
+        info = {
+            "hwnd": int(root),
+            "visible": bool(user32.IsWindowVisible(root)),
+            "minimized": bool(user32.IsIconic(root)),
+            "zoomed": bool(user32.IsZoomed(root)),
+            "is_shell": bool(shell and root == shell),       # 桌面窗口本身
+            "class_name": "",
+            "style": 0,
+            "pid": 0,
+            "rect": None,
+            "monitor_rect": None,
+        }
+        buf = ctypes.create_unicode_buffer(256)
+        if user32.GetClassNameW(root, buf, len(buf)):
+            info["class_name"] = buf.value
+        info["style"] = int(api["get_style"](root, GWL_STYLE) or 0)
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(root, ctypes.byref(pid))
+        info["pid"] = int(pid.value)
+        rect = wt.RECT()
+        if user32.GetWindowRect(root, ctypes.byref(rect)):
+            info["rect"] = (rect.left, rect.top, rect.right, rect.bottom)
+        info["monitor_rect"] = _monitor_rect_of(
+            user32, api["monitor_info"],
+            user32.MonitorFromWindow(root, MONITOR_DEFAULTTONEAREST))
+        if self_pid is not None:
+            info["self_pid"] = int(self_pid)
+        return info
+    except Exception:
+        return None
+
+
+def rect_covers(inner, outer, tolerance=FULLSCREEN_TOLERANCE):
+    """纯函数：inner 矩形是否盖住 outer 矩形（容差 tolerance 像素）。"""
+    if not inner or not outer:
+        return False
+    left, top, right, bottom = inner
+    o_left, o_top, o_right, o_bottom = outer
+    return (left <= o_left + tolerance and top <= o_top + tolerance
+            and right >= o_right - tolerance and bottom >= o_bottom - tolerance)
+
+
+def rects_intersect(a, b):
+    """纯函数：两个 (left, top, right, bottom) 矩形是否有重叠。"""
+    if not a or not b:
+        return False
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
+
+
+def is_fullscreen_window(info, tolerance=FULLSCREEN_TOLERANCE):
+    """纯函数：前台窗口是不是"真的全屏应用"（游戏 / 全屏视频）。
+
+    info 的键由 foreground_window_info() 采集，测试可以直接喂假数据。
+    任一条不满足即不算全屏：
+      1. 窗口可见、且没有最小化；
+      2. 不是桌面/任务栏这类 shell 窗口（它们天生铺满屏幕，不是全屏应用）；
+      3. 不是桌宠自己的窗口（进程号相同）；
+      4. 矩形要盖住"它所在的那块显示器"——注意是显示器，不是工作区
+         （最大化窗口只盖住工作区，真全屏会连任务栏一起盖住）；
+      5. "最大化"状态且带标题栏/边框的窗口不算全屏（浏览器最大化因此不再被误判）。
+    """
+    if not info or not info.get("visible") or info.get("minimized"):
+        return False
+    if info.get("is_shell"):
+        return False
+    if str(info.get("class_name") or "").strip().lower() in SHELL_WINDOW_CLASSES:
+        return False
+    if info.get("self_pid") is not None and info.get("pid") == info.get("self_pid"):
+        return False
+    if not rect_covers(info.get("rect"), info.get("monitor_rect"), tolerance):
+        return False
+    if info.get("zoomed") and int(info.get("style") or 0) & (WS_CAPTION | WS_THICKFRAME):
+        return False
+    return True
+
+
 class PetWindow(QWidget):
     update_done = pyqtSignal(str)
 
@@ -2060,6 +2284,7 @@ class PetWindow(QWidget):
         self.app_monitor_enabled = bool(self.cfg.get("app_monitor_enabled", True))
         self.hide_in_fullscreen = bool(self.cfg.get("hide_in_fullscreen", True))
         self._hidden_by_fullscreen = False
+        self._fs_streak = 0             # 连续判定为全屏的次数（防抖计数）
         self.auto_check_update = bool(self.cfg.get("auto_check_update", True))
         self.update_check_interval_hours = max(1, min(168, int(self.cfg.get("update_check_interval_hours", 24))))
         self._update_tag = ""
@@ -2103,6 +2328,12 @@ class PetWindow(QWidget):
         self._monitor_timer = QTimer(self)
         self._monitor_timer.timeout.connect(self._guard("应用监控", self._monitor_tick))
         self._monitor_timer.start(1000)
+        # 前台窗口 / 全屏判定单独走 250ms：只做几个轻量 Win32 调用，
+        # 退出全屏后最多 0.5 秒就能恢复，不必等应用监控那 1 秒的节拍
+        self._fg_timer = QTimer(self)
+        self._fg_timer.timeout.connect(self._guard("前台窗口检测", self._foreground_tick))
+        self._fg_timer.start(FG_POLL_MS)
+        self._last_fore_hwnd = 0
         self._last_fore_exe = ""
         self._rule_fire_time = {}
         self._checking_update = False
@@ -2117,6 +2348,9 @@ class PetWindow(QWidget):
         self._squish_anim = None
         self._fade_anim = None
         self._base_pixmap = None
+        self._mirror_cache = None           # 贴左边缘时的翻转位图缓存
+        self._mirror_cache_src = None
+        self._exe_by_pid = {}               # 进程号 → exe 名（避免每秒 OpenProcess）
 
         self.movie = None
         self._drag_pos = None
@@ -2140,7 +2374,7 @@ class PetWindow(QWidget):
         self._auto_rotate_timer.timeout.connect(self._guard("自动轮换", self._on_auto_rotate))
         self._move_timer = QTimer(self)
         self._move_timer.timeout.connect(self._guard("移动", self._move_tick))
-        self._move_timer.start(16)
+        self._move_timer.start(MOVE_MS_IDLE)     # 静止时 10fps，真动起来自动切 60fps
 
         self.expressions = scan_expressions()
 
@@ -2241,8 +2475,15 @@ class PetWindow(QWidget):
 
     # ---------- 表情 ----------
     def _mirror_pixmap(self, pix):
+        if pix is None:
+            return pix
         if self.auto_mirror and self._near_left_edge():
-            return pix.transformed(QTransform().scale(-1, 1))
+            # 贴左边缘时每一帧都翻转整张位图太浪费（移动时 60fps），缓存翻转结果
+            if self._mirror_cache is not None and self._mirror_cache_src is pix:
+                return self._mirror_cache
+            self._mirror_cache_src = pix
+            self._mirror_cache = pix.transformed(QTransform().scale(-1, 1))
+            return self._mirror_cache
         return pix
 
     def _near_left_edge(self):
@@ -2309,6 +2550,19 @@ class PetWindow(QWidget):
                 self._auto_rotate_timer.start(self.auto_rotate_interval * 1000)
         else:
             self._auto_rotate_timer.stop()
+
+    def _pause_idle_timers(self):
+        """全屏隐藏期间停掉 HUD/移动/眨眼/轮换：玩游戏时不再白烧 CPU。"""
+        for timer in (self._hud_timer, self._move_timer, self._blink_timer,
+                      self._auto_rotate_timer, self._idle_8s, self._idle_120s):
+            timer.stop()
+
+    def _resume_idle_timers(self):
+        """恢复显示时把上面停掉的定时器按原逻辑重新起起来。"""
+        if not self._hud_timer.isActive():
+            self._hud_timer.start(1000)
+        self._reset_idle_timers()
+        self._reset_move_timer()
 
     def _on_idle_8s(self):
         if self.auto_emotion and not self._moved:
@@ -2685,46 +2939,48 @@ class PetWindow(QWidget):
             pass
 
     def _get_foreground_exe(self):
+        """前台窗口的 (进程名, 标题)，进程名小写；拿不到返回 ("", "")。
+        进程名按进程号缓存：OpenProcess 每秒做一次纯属浪费，标题则每次都读。"""
         try:
-            import ctypes as _ct
-            from ctypes import wintypes
-            user32 = _ct.windll.user32
-            kernel32 = _ct.windll.kernel32
-            user32.GetForegroundWindow.restype = wintypes.HWND
-            # 声明参数类型：64 位下句柄若按 int 传递会溢出（会让整个进程崩掉）
-            user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
-            user32.GetWindowTextLengthW.restype = _ct.c_int
-            user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, _ct.c_int]
-            user32.GetWindowTextW.restype = _ct.c_int
-            user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, _ct.POINTER(wintypes.DWORD)]
-            user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            api = _win32()
+            user32, wt = api["user32"], api["wt"]
             hwnd = user32.GetForegroundWindow()
             if not hwnd:
                 return "", ""
             n = user32.GetWindowTextLengthW(hwnd)
-            buf = _ct.create_unicode_buffer(max(1, n + 1))
+            buf = ctypes.create_unicode_buffer(max(1, n + 1))
             user32.GetWindowTextW(hwnd, buf, len(buf))
-            title = buf.value
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, _ct.byref(pid))
-            exe = ""
-            kernel32.OpenProcess.restype = wintypes.HANDLE
-            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-            kernel32.QueryFullProcessImageNameW.argtypes = [
-                wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, _ct.POINTER(wintypes.DWORD)]
-            hproc = kernel32.OpenProcess(0x1000, False, pid.value)
-            if hproc:
-                try:
-                    size = wintypes.DWORD(512)
-                    buf2 = _ct.create_unicode_buffer(size.value)
-                    if kernel32.QueryFullProcessImageNameW(hproc, 0, buf2, _ct.byref(size)):
-                        exe = os.path.basename(buf2.value)
-                finally:
-                    kernel32.CloseHandle(hproc)
-            return exe.lower(), title
+            pid = wt.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            return self._exe_name_of(int(pid.value)), buf.value
         except Exception:
             return "", ""
+
+    def _exe_name_of(self, pid):
+        """按进程号取 exe 文件名（小写）。同一进程只查一次（结果含空值也缓存）。"""
+        if not pid:
+            return ""
+        if pid in self._exe_by_pid:
+            return self._exe_by_pid[pid]
+        exe = ""
+        try:
+            api = _win32()
+            kernel32, wt = api["kernel32"], api["wt"]
+            hproc = kernel32.OpenProcess(0x1000, False, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+            if hproc:
+                try:
+                    size = wt.DWORD(512)
+                    buf = ctypes.create_unicode_buffer(size.value)
+                    if kernel32.QueryFullProcessImageNameW(hproc, 0, buf, ctypes.byref(size)):
+                        exe = os.path.basename(buf.value).lower()
+                finally:
+                    kernel32.CloseHandle(hproc)
+        except Exception:
+            exe = ""
+        if len(self._exe_by_pid) > 64:      # 缓存别无限长（长时间运行会换很多前台进程）
+            self._exe_by_pid.clear()
+        self._exe_by_pid[pid] = exe
+        return exe
 
     def _rule_chance_hit(self, rule):
         """规则概率判定：chance 为 0~100 的百分比。"""
@@ -2762,49 +3018,103 @@ class PetWindow(QWidget):
             self._rules_mtime = mtime
 
     def _is_fullscreen_foreground(self):
-        """前台窗口是否铺满整个屏幕（游戏/全屏视频）→ 用于临时隐藏桌宠，避免遮挡。"""
-        try:
-            from ctypes import wintypes
-            user32 = ctypes.windll.user32
-            user32.GetForegroundWindow.restype = wintypes.HWND
-            hwnd = user32.GetForegroundWindow()
-            if not hwnd:
-                return False
-            if user32.IsWindowVisible(hwnd) == 0:
-                return False
-            rect = wintypes.RECT()
-            user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-            user32.GetWindowRect.restype = wintypes.BOOL
-            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                return False
-            screen = QApplication.primaryScreen()
-            if not screen:
-                return False
-            g = screen.geometry()
-            # 窗口覆盖整个屏幕（容差 2px）即视为全屏
-            return (rect.left <= g.left() + 2 and rect.top <= g.top() + 2
-                    and rect.right >= g.right() - 2 and rect.bottom >= g.bottom() - 2)
-        except Exception:
+        """前台窗口是否真的是全屏应用（游戏/全屏视频）→ 用于临时隐藏桌宠，避免遮挡。
+        判定细节在模块级纯函数 is_fullscreen_window()（tests/check_fullscreen.py 单测它）。
+        另外只认"与桌宠同一块显示器被全屏占用"：副屏全屏看电影时，主屏的桌宠不该被藏起来。"""
+        info = foreground_window_info(self_pid=os.getpid())
+        if not is_fullscreen_window(info):
             return False
+        return rects_intersect(info.get("monitor_rect"), self._screen_rect())
+
+    def _screen_rect(self):
+        """桌宠所在显示器的矩形 (left, top, right, bottom)，用于和窗口矩形比较。
+
+        优先用 Win32 的 MonitorFromWindow：它和窗口矩形同属物理像素坐标系，
+        高 DPI 缩放、副屏有偏移时不会与 Qt 的逻辑像素错位；拿不到再退回 QScreen。
+        """
+        rect = win32_monitor_rect(int(self.winId()))
+        if rect:
+            return rect
+        screen = None
+        try:
+            screen = self.screen()                      # Qt >= 5.14
+        except Exception:
+            screen = None
+        if screen is None:
+            try:
+                screen = QApplication.screenAt(self.geometry().center())
+            except Exception:
+                screen = None
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return None
+        g = screen.geometry()
+        return (g.left(), g.top(), g.right(), g.bottom())
 
     def _fullscreen_tick(self):
-        """全屏应用时临时隐藏桌宠与气泡；退出全屏后自动恢复。"""
+        """全屏应用时临时隐藏桌宠与气泡；退出全屏后立即恢复。
+
+        判定见 _is_fullscreen_foreground()（严格全屏：桌面、任务栏、最大化窗口都不算）。
+        连续 FULLSCREEN_CONFIRM_TICKS 次判定为全屏才隐藏（防抖，切换窗口瞬间不闪），
+        但只要有一次不是全屏就立刻恢复显示。"""
         if not self.hide_in_fullscreen:
+            self._fs_streak = 0
+            if self._hidden_by_fullscreen:
+                self._restore_from_fullscreen("已关闭「全屏时自动隐藏」")
             return
-        full = self._is_fullscreen_foreground()
-        if full and self.isVisible():
-            self._hidden_by_fullscreen = True
-            try:
-                self.bubble.hide()
-            except Exception:
-                pass
-            self.hide()
-            self._log("检测到全屏应用，已临时隐藏桌宠（退出全屏后自动恢复）")
-        elif not full and getattr(self, "_hidden_by_fullscreen", False):
-            self._hidden_by_fullscreen = False
-            self.show()
-            self.raise_()
-            self._log("全屏应用已退出，桌宠恢复显示")
+        self._fs_streak = self._fs_streak + 1 if self._is_fullscreen_foreground() else 0
+        if self._fs_streak >= FULLSCREEN_CONFIRM_TICKS and not self._hidden_by_fullscreen:
+            self._hide_for_fullscreen()
+        elif self._fs_streak == 0 and self._hidden_by_fullscreen:
+            self._restore_from_fullscreen("全屏应用已退出")
+
+    def _foreground_tick(self):
+        """每 250ms 一次：跟踪前台窗口变化 + 全屏判定。
+
+        只在前台窗口真的换了的时候补一次置顶（有些程序抢焦点会把桌宠压到下面），
+        其余时候不碰 z-order，避免频繁 SetWindowPos 造成抖动。"""
+        hwnd = foreground_hwnd()
+        if hwnd != self._last_fore_hwnd:
+            self._last_fore_hwnd = hwnd
+            self._reassert_topmost()
+        self._fullscreen_tick()
+
+    def _hide_for_fullscreen(self):
+        self._hidden_by_fullscreen = True
+        try:
+            self.bubble.hide()
+        except Exception:
+            pass
+        self.hide()
+        self._pause_idle_timers()           # 隐藏期间不再刷 HUD / 空转移动
+        info = foreground_window_info() or {}
+        self._log(f"检测到全屏应用[{info.get('class_name') or '未知'}]，"
+                  "已临时隐藏桌宠（退出全屏后自动恢复）")
+
+    def _restore_from_fullscreen(self, reason):
+        self._hidden_by_fullscreen = False
+        self._fs_streak = 0
+        self.show()
+        self.raise_()
+        self._resume_idle_timers()
+        self._reassert_topmost()
+        self._log(f"{reason}，桌宠恢复显示")
+
+    def _reassert_topmost(self):
+        """把桌宠重新顶到最前（HWND_TOPMOST）。
+
+        Qt 的 WindowStaysOnTopHint 只在建窗时生效一次，别的程序抢焦点或最大化时
+        可能把桌宠压到 z-order 下面（表现为"被浏览器盖住、看不见了"），这里兜底补一次。"""
+        if not self.always_on_top or not self.isVisible():
+            return
+        try:
+            api = _win32()
+            api["user32"].SetWindowPos(
+                api["wt"].HWND(int(self.winId())), api["wt"].HWND(HWND_TOPMOST),
+                0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        except Exception:
+            pass
 
     def _update_schedule_tick(self):
         """按间隔自动检查更新（默认每 24 小时一次，可在设置里关闭）。"""
@@ -2820,7 +3130,6 @@ class PetWindow(QWidget):
             self.check_update(auto=True)
 
     def _monitor_tick(self):
-        self._fullscreen_tick()
         self._update_schedule_tick()
         if not self.app_monitor_enabled:
             return
@@ -2973,6 +3282,22 @@ class PetWindow(QWidget):
         self._refresh_mirror()
 
     def _move_tick(self):
+        try:
+            self._move_step()
+        finally:
+            self._reset_move_timer()
+
+    def _reset_move_timer(self):
+        """按需调整移动节拍：真的在动（拖动/跟随/躲避/漫游/弹射）才 60fps，
+        静止时降到 10fps —— 否则每秒 60 次空转唤醒纯属白烧 CPU。"""
+        moving = (self._sling_active or self._r_dragging or self._dragging
+                  or self.follow_mode or self.evade_mode or self.wander_mode
+                  or self._wander_on or getattr(self, "_drag_hold", False))
+        want = MOVE_MS_ACTIVE if moving else MOVE_MS_IDLE
+        if not self._move_timer.isActive() or self._move_timer.interval() != want:
+            self._move_timer.start(want)
+
+    def _move_step(self):
         dt = 1 / 60.0
         if self.lock_position:
             return
@@ -3609,6 +3934,7 @@ class PetWindow(QWidget):
         if self.follow_mode:
             self.evade_mode = False
         self._vx = self._vy = 0.0
+        self._reset_move_timer()        # 立刻切到 60fps，跟随不迟滞
         self.save()
 
     def set_evade_mode(self, enabled):
@@ -3616,11 +3942,13 @@ class PetWindow(QWidget):
         if self.evade_mode:
             self.follow_mode = False
         self._vx = self._vy = 0.0
+        self._reset_move_timer()
         self.save()
 
     def set_wander_mode(self, enabled):
         self.wander_mode = bool(enabled)
         self._wander_on = False
+        self._reset_move_timer()
         self.save()
 
     def set_click_rotate_count(self, count):
@@ -3647,7 +3975,9 @@ class PetWindow(QWidget):
         if enabled:
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
-        self.show()
+        if not self._hidden_by_fullscreen:
+            self.show()                 # 正被全屏隐藏时不要把它弹出来
+        self._reassert_topmost()
         self.save()
 
     def set_hud_visible(self, visible):

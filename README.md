@@ -1,8 +1,8 @@
-﻿# 🐳 DeepSeek 小鲸鱼桌宠（Whale Desktop Pet）
+# 🐳 DeepSeek 小鲸鱼桌宠（Whale Desktop Pet）
 
-![Python](https://img.shields.io/badge/Python-3.9+-blue) ![GUI](https://img.shields.io/badge/GUI-PyQt5-41b883) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078d6) ![Version](https://img.shields.io/badge/Version-v4.4.0-orange)
+![Python](https://img.shields.io/badge/Python-3.9+-blue) ![GUI](https://img.shields.io/badge/GUI-PyQt5-41b883) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078d6) ![Version](https://img.shields.io/badge/Version-v4.4.1-orange)
 
-**作者：shiyi312（辻弌）**　|　版本：`v4.4.0`　|　[开发者信息](#-开发者信息)
+**作者：shiyi312（辻弌）**　|　版本：`v4.4.1`　|　[开发者信息](#-开发者信息)
 
 ![DSH 小鲸鱼桌宠](assets/DSH2.png)
 
@@ -44,6 +44,10 @@
 - ⚙️ **系统能力**：单实例锁、开机自启（自动修正失效路径）、
   独立运行日志（每次启动归档、保留 100 份）、应用打开监控 + 自定义规则与概率、
   自定义点击音效、GitHub 更新检查、磁盘图标美化（大肥鱼）、托盘右键菜单
+- 🖥️ **全屏智能隐藏（v4.4.1 重做判定）**：玩全屏游戏 / 看全屏视频时自动隐藏桌宠与气泡，
+  退出全屏 **0.25 秒内**恢复（可在设置里开关）。判定只认**真正的全屏**：
+  桌面（Progman/WorkerW）、任务栏、**最大化窗口**、半屏窗口都不算全屏 ——
+  刷新桌面、打开/最大化浏览器都不会再把桌宠藏起来；副屏全屏也不会影响主屏的桌宠
 - 🎚️ **卡片式设置面板**：4 个标签页 × 多分区卡片（每张卡片带标题、说明与「?」提示），
   深色玻璃风格，**面板内可搜索设置项**，**记住位置与页签**，
   标题栏可拖动、离开面板自动关闭，低分辨率屏幕自动启用滚动
@@ -183,6 +187,8 @@ DeepSeek-Whale-Desktop-Pet/
 | **动态遍历** `tests/check_dynamic.py` | 遍历面板**每个按钮/复选框/滑块/下拉/输入框/列表项**，并模拟日常操作：连点、长按、拖拽、右键、弹射（含边缘反弹）、喂食文件与目录、跟随/躲避/漫游/锁定/置顶 tick、表情与大小全量、台词与气泡全量、音效播放、应用监控、日志清理 —— 任何异常都会打印 |
 | 启动检查 `tests/check_startup.py` | 分段启动耗时、启动到可见总时长、启动瞬间朝向（贴左边缘应立即镜像）、音效延迟预加载、耗时日志 |
 | 音效检查 `tests/check_sound.py` | 音效目录扫描、播放器池每声完整、池满接管最早、预加载不重复、自定义音效覆盖、音量同步 |
+| 全屏判定 `tests/check_fullscreen.py` | 纯函数用例（真全屏 / 桌面 / 任务栏 / 最大化浏览器 / 半屏 / 最小化 / 采集失败）+ 同屏判定（副屏全屏不藏主屏桌宠）+ 隐藏恢复时序（防抖、立即恢复、250ms 轮询） |
+| 性能专项 `tests/check_perf.py` | 静止时移动节拍降频、开启跟随/漫游立刻回 60fps、全屏隐藏期间 HUD/移动/眨眼/轮换全停、进程名按 PID 缓存、镜像位图缓存、面板关闭后悬停轮询停止 |
 
 两条路缺一不可：静态分析能发现"代码根本没跑到"的问题（如被注释吞掉的赋值），
 动态遍历能发现"跑起来才炸"的问题（参数不匹配、空数据、状态组合）。
@@ -209,7 +215,7 @@ DeepSeek-Whale-Desktop-Pet/
 | 项 | 内容 |
 |---|---|
 | 作者 | shiyi312 |
-| 版本 | v4.4.0 |
+| 版本 | v4.4.1 |
 | QQ 交流群 | `254668799`（[点击搜索加群](https://qun.qq.com/qq/254668799)） |
 
 > 🐛 使用中遇到问题？欢迎加入 QQ 交流群 `254668799` 反馈 bug 或提出建议；

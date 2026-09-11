@@ -22,9 +22,10 @@ def main():
     pet.show()
     app.processEvents()
 
-    # 1) 全屏时自动隐藏、退出全屏自动恢复
+    # 1) 全屏时自动隐藏、退出全屏自动恢复（判定有 2 次防抖，隐藏要连打两次 tick）
     pet.hide_in_fullscreen = True
     pet._is_fullscreen_foreground = lambda: True
+    pet._fullscreen_tick()
     pet._fullscreen_tick()
     app.processEvents()
     assert not pet.isVisible(), "全屏时应隐藏桌宠（避免遮挡游戏）"
