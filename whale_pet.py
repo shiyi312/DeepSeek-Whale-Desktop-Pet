@@ -6,6 +6,7 @@ DeepSeek Whale Desktop Pet v4
 """
 
 import copy
+import ctypes
 import glob
 import inspect
 import json
@@ -315,21 +316,46 @@ def write_rules_file(rules):
 
 
 # ---------- 磁盘图标美化（大肥鱼） ----------
+def is_admin():
+    """当前进程是否以管理员身份运行。"""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def set_file_attrs(path, hidden=True, system=True):
+    """用 ctypes 直接设置文件属性（比 attrib 命令可靠，不依赖子进程）。"""
+    try:
+        HIDDEN, SYSTEM = 0x02, 0x04
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+        if attrs == -1:
+            return False
+        new = attrs
+        if hidden:
+            new |= HIDDEN
+        if system:
+            new |= SYSTEM
+        return bool(ctypes.windll.kernel32.SetFileAttributesW(str(path), new))
+    except Exception:
+        return False
+
+
 def build_fish_ico(png_path, ico_path, size=256):
-    """把 PNG 转成 ICO（单张 PNG 内嵌，Vista 及以上支持）。"""
+    """把 PNG 转成 ICO（单张 PNG 内嵌，Vista 及以上支持）。返回 (成功?, 原因)。"""
     import struct
     pix = QPixmap(png_path)
     if pix.isNull():
-        return False
+        return False, "素材读取失败"
     pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-    tmp = ico_path + ".tmp.png"
+    tmp = os.path.join(os.environ.get("TEMP", "."), "dshw_fish_tmp.png")
     if not pix.save(tmp, "PNG"):
-        return False
+        return False, "临时图片写出失败"
     try:
         with open(tmp, "rb") as f:
             data = f.read()
-    except OSError:
-        return False
+    except OSError as e:
+        return False, f"读取临时图片失败：{e}"
     finally:
         try:
             os.remove(tmp)
@@ -340,24 +366,35 @@ def build_fish_ico(png_path, ico_path, size=256):
             f.write(struct.pack("<HHH", 0, 1, 1))                      # ICONDIR
             f.write(struct.pack("<BBBBHHII", 0, 0, 0, 0, 1, 32, len(data), 22))  # ICONDIRENTRY
             f.write(data)
-    except OSError:
-        return False
-    return True
+    except PermissionError as e:
+        return False, f"无权限写入 {ico_path}（需要管理员）：{e}"
+    except OSError as e:
+        return False, f"写入 ICO 失败：{e}"
+    return True, ""
 
 
 def apply_drive_icon(drive, ico_path):
-    """在磁盘根目录写 desktop.ini 指向图标（需要管理员权限），失败返回 False。"""
+    """在磁盘根目录写 desktop.ini 指向图标。返回 (成功?, 原因)。
+    注意：desktop.ini 必须用 UTF-16LE 写（Windows 原生支持），
+    用 UTF-8 会导致中文路径解析失败、图标不生效。"""
     root = drive.rstrip("\\") + "\\"
     ini = os.path.join(root, "desktop.ini")
     try:
-        with open(ini, "w", encoding="utf-8") as f:
+        if os.path.exists(ini):
+            # 已存在的 desktop.ini 可能带"隐藏+系统"属性，先去掉系统属性再写
+            set_file_attrs(ini, hidden=False, system=False)
+        with open(ini, "w", encoding="utf-16") as f:
             f.write("[.ShellClassInfo]\n")
             f.write(f"IconResource={ico_path},0\n")
-        subprocess.run(["attrib", "+s", "+h", ini], capture_output=True)
-        subprocess.run(["attrib", "+s", root], capture_output=True)
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False
+    except PermissionError as e:
+        return False, f"无权限写入 {ini}（需要管理员）：{e}"
+    except OSError as e:
+        return False, f"写入 {ini} 失败：{e}"
+    ok_ini = set_file_attrs(ini, hidden=True, system=True)
+    ok_root = set_file_attrs(root, hidden=False, system=True)
+    if not (ok_ini and ok_root):
+        return False, "文件已写入，但属性设置失败（图标可能不刷新）"
+    return True, ""
 
 
 def expr_display_name(raw):
@@ -560,6 +597,7 @@ class BubbleWidget(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.lines = []
         self.color_key = "blue"
+        self.tail_up = False          # True = 气泡在角色下方（尖头朝上）
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self.font_size = 13
@@ -599,10 +637,18 @@ class BubbleWidget(QWidget):
         self.setFixedSize(w, h)
 
         if pet is not None:
+            w = self.width()
+            h = self.height()
+            geo = QApplication.primaryScreen().availableGeometry()
             x = pet.x() + (pet.width() - w) // 2
             y = pet.y() - h - 8
-            if y < 0:
-                y = pet.y() + pet.height() + 8
+            self.tail_up = False
+            if y < geo.top():
+                # 上方空间不足（角色贴顶）→ 放到角色下方，尖头朝上指向角色
+                below = pet.y() + pet.height() + 8
+                if below + h <= geo.bottom():
+                    y = below
+                    self.tail_up = True
             x, y = clamp_to_screen(x, y, w, h)      # 左右上下都不越出屏幕
             self.move(x, y)
 
@@ -611,11 +657,17 @@ class BubbleWidget(QWidget):
         self.raise_()
         self._timer.start(duration)
 
+    def _body_rect(self):
+        """气泡主体矩形：尖头朝上时顶部留 14px，朝下时底部留 14px。"""
+        if self.tail_up:
+            return self.rect().adjusted(5, 14, -5, -5)
+        return self.rect().adjusted(5, 5, -5, -14)
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         c = BUBBLE_COLORS.get(self.color_key, BUBBLE_COLORS["blue"])
-        rect = self.rect().adjusted(5, 5, -5, -14)
+        rect = self._body_rect()
 
         path = QPainterPath()
         path.addRoundedRect(QRectF(rect), 18, 18)
@@ -623,10 +675,17 @@ class BubbleWidget(QWidget):
         p.setBrush(QBrush(QColor(*c["bg"])))
         p.drawPath(path)
 
+        # 尖头方向跟着气泡位置走：气泡在角色下方 → 尖头朝上指向角色；在上方 → 朝下
+        cx = rect.left() + rect.width() // 2
         tail = QPainterPath()
-        tail.moveTo(rect.left() + rect.width() // 2 - 12, rect.bottom())
-        tail.lineTo(rect.left() + rect.width() // 2, rect.bottom() + 14)
-        tail.lineTo(rect.left() + rect.width() // 2 + 12, rect.bottom())
+        if self.tail_up:
+            tail.moveTo(cx - 12, rect.top())
+            tail.lineTo(cx, rect.top() - 14)
+            tail.lineTo(cx + 12, rect.top())
+        else:
+            tail.moveTo(cx - 12, rect.bottom())
+            tail.lineTo(cx, rect.bottom() + 14)
+            tail.lineTo(cx + 12, rect.bottom())
         p.setPen(QPen(QColor(c["border"]), 3))
         p.setBrush(QBrush(QColor(*c["bg"])))
         p.drawPath(tail)
@@ -3178,14 +3237,23 @@ class PetWindow(QWidget):
     def sync_bubble_position(self):
         if self.bubble is None or not self.bubble.isVisible():
             return
+        screen = QApplication.primaryScreen()
+        top = screen.availableGeometry().top() if screen else 0
         w = self.bubble.width()
         h = self.bubble.height()
         x = self.x() + (self.width() - w) // 2
         y = self.y() - h - 8
-        if y < 0:
+        self.bubble.tail_up = False
+        if y < top:
             y = self.y() + self.height() + 8
-        x, y = clamp_to_screen(x, y, w, h)          # 贴边时气泡不会被屏幕截断
+            self.bubble.tail_up = True          # 气泡在下方 → 尖头朝上
+        x, y = clamp_to_screen(x, y, w, h)      # 贴边时气泡不会被屏幕截断
         self.bubble.move(x, y)
+
+    def moveEvent(self, event):
+        """任何方式的位置变化（吸附、瞬移、拖动、自动移动）都让气泡跟上。"""
+        super().moveEvent(event)
+        self.sync_bubble_position()
 
     # ---------- 设置方法 ----------
     def set_size_level(self, level, save=True):
@@ -3425,18 +3493,59 @@ class PetWindow(QWidget):
         if not drives:
             return
         drive, ok = QInputDialog.getItem(
-            self, "美化磁盘图标", "选择要美化的磁盘（需要管理员权限）：", drives, 0, False)
+            self, "美化磁盘图标", "选择要美化的磁盘：", drives, 0, False)
         if not ok or not drive:
             return
-        ico = os.path.join(drive.rstrip("\\") + "\\", "dshw_fish.ico")
-        if not build_fish_ico(png, ico):
-            self.show_bubble_quick("图标生成失败")
+        # 需要管理员权限：非管理员时询问是否提权重启（会弹系统授权窗口）
+        if not is_admin():
+            ret = QMessageBox.question(
+                self, "需要管理员权限",
+                "美化磁盘图标需要管理员权限。\n\n"
+                "是否以管理员身份重新启动桌宠？\n"
+                "（会弹出系统的“用户账户控制”窗口，点“是”即可）",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if ret == QMessageBox.Yes:
+                self.relaunch_as_admin()
             return
-        if apply_drive_icon(drive, ico):
-            self._log(f"磁盘图标美化：{drive}")
-            self.show_bubble_quick(f"{drive} 图标已美化，刷新/重启后生效")
+        ico = os.path.join(drive.rstrip("\\") + "\\", "dshw_fish.ico")
+        ok, reason = build_fish_ico(png, ico)
+        if not ok:
+            self._log(f"磁盘图标：生成失败 - {reason}")
+            self.show_bubble_quick(f"图标生成失败：{reason[:36]}")
+            return
+        ok, reason = apply_drive_icon(drive, ico)
+        if ok:
+            self._log(f"磁盘图标美化成功：{drive}")
+            self.show_bubble_quick(f"{drive} 图标已美化，刷新或重启后生效")
         else:
-            self.show_bubble_quick("写入失败：请以管理员身份运行桌宠后重试")
+            self._log(f"磁盘图标：写入失败 - {reason}")
+            self.show_bubble_quick(f"写入失败：{reason[:36]}")
+
+    def relaunch_as_admin(self):
+        """以管理员身份重新启动自己（弹 UAC），成功后退出当前实例。"""
+        try:
+            exe = sys.executable
+            if getattr(sys, "frozen", False):
+                params = " ".join(f'"{a}"' for a in sys.argv[1:])
+            else:
+                params = f'"{os.path.abspath(__file__)}"'
+            # 先释放单实例锁，否则新实例会被判定为"已在运行"
+            lock = getattr(self, "_lock", None)
+            if lock is not None:
+                try:
+                    lock.unlock()
+                except Exception:
+                    pass
+            r = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
+            if int(r) <= 32:
+                self._log(f"提权重启被拒绝（ShellExecuteW 返回 {r}）")
+                self.show_bubble_quick("提权被取消，已保持当前运行")
+                return
+            self._log("已请求以管理员身份重启桌宠")
+            QApplication.quit()
+        except Exception as e:
+            self._log(f"提权重启失败: {e!r}")
+            self.show_bubble_quick("提权失败，请手动以管理员身份运行")
 
     def toggle_hud(self):
         self.set_hud_visible(not self.hud_visible)
@@ -3644,6 +3753,7 @@ def main():
         QMessageBox.information(None, "小鲸鱼桌宠", "小鲸鱼桌宠已经运行了，请不要重复启动。")
         return
     pet = PetWindow()
+    pet._lock = lock            # 供"以管理员身份重启"时释放单实例锁
     pet.show()
     pet.create_tray()
     app.aboutToQuit.connect(lambda: pet._log("小鲸鱼桌宠退出"))
