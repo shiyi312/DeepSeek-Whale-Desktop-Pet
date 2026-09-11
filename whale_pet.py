@@ -324,19 +324,82 @@ def is_admin():
         return False
 
 
-def set_file_attrs(path, hidden=True, system=True):
-    """用 ctypes 直接设置文件属性（比 attrib 命令可靠，不依赖子进程）。"""
+def set_file_attrs(path, hidden=True, system=True, readonly=None):
+    """用 ctypes 直接设置文件属性（比 attrib 命令可靠，不依赖子进程）。
+
+    每个参数都是「目标状态」：True=设上、False=去掉、None=不动。
+    旧版只做 |= 不做 &=，于是传 False 时什么也没清掉 —— 而带隐藏+系统属性的文件
+    在覆盖/删除时会「拒绝访问」，所以这里必须真的能清。"""
     try:
-        HIDDEN, SYSTEM = 0x02, 0x04
+        HIDDEN, SYSTEM, READONLY = 0x02, 0x04, 0x01
         attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
         if attrs == -1:
             return False
         new = attrs
-        if hidden:
-            new |= HIDDEN
-        if system:
-            new |= SYSTEM
+        for flag, want in ((HIDDEN, hidden), (SYSTEM, system), (READONLY, readonly)):
+            if want is None:
+                continue
+            new = (new | flag) if want else (new & ~flag)
+        if new == attrs:
+            return True
         return bool(ctypes.windll.kernel32.SetFileAttributesW(str(path), new))
+    except Exception:
+        return False
+
+
+def delete_files_elevated(paths):
+    """用管理员权限删除这些文件（会弹一次 UAC）。返回 (是否已发起, 原因)。
+
+    用于删除「当初以管理员身份写入、带 High 完整性标签」的文件：
+    这种文件普通权限连删都不让删（WinError 5），只能借管理员权限来删。"""
+    paths = [p for p in paths if p]
+    if not paths:
+        return False, ""
+    try:
+        quoted = " ".join(f'"{p}"' for p in paths)
+        # SW_HIDE(0)：提权的 cmd 不显示黑框
+        r = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", "cmd.exe", f"/c del /f /q {quoted}", None, 0)
+        if int(r) <= 32:
+            return False, f"提权请求被取消或失败（代码 {int(r)}）"
+        return True, ""
+    except Exception as e:
+        return False, f"提权删除失败：{e}"
+
+
+def lower_integrity_to_medium(path):
+    """把文件的完整性标签降回「中等」。需要管理员权限，失败返回 False。
+
+    管理员身份写入的文件会被系统自动标成 High（并带 No-Write-Up），
+    之后普通权限的桌宠既改不了也删不掉；写入后立刻降回 Medium 就不会留后患。"""
+    try:
+        advapi32 = ctypes.windll.advapi32
+        advapi32.ConvertStringSidToSidW.argtypes = [ctypes.c_wchar_p,
+                                                    ctypes.POINTER(ctypes.c_void_p)]
+        advapi32.ConvertStringSidToSidW.restype = ctypes.c_int
+        advapi32.SetNamedSecurityInfoW.argtypes = [
+            ctypes.c_wchar_p, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        advapi32.SetNamedSecurityInfoW.restype = ctypes.c_int
+
+        class SID_AND_ATTRIBUTES(ctypes.Structure):
+            _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", ctypes.c_uint32)]
+
+        class TOKEN_MANDATORY_LABEL(ctypes.Structure):
+            _fields_ = [("Label", SID_AND_ATTRIBUTES)]
+
+        sid = ctypes.c_void_p()
+        if not advapi32.ConvertStringSidToSidW("S-1-16-8192", ctypes.byref(sid)):
+            return False                       # S-1-16-8192 = 中等完整性
+        try:
+            label = TOKEN_MANDATORY_LABEL()
+            label.Label.Sid = sid
+            label.Label.Attributes = 0x20      # SE_GROUP_INTEGRITY
+            # SE_FILE_OBJECT 传 1；LABEL_SECURITY_INFORMATION 传 0x00000004
+            return advapi32.SetNamedSecurityInfoW(
+                str(path), 1, 0x00000004, None, None, None, ctypes.byref(label)) == 0
+        finally:
+            ctypes.windll.kernel32.LocalFree(sid)
     except Exception:
         return False
 
@@ -453,27 +516,72 @@ def apply_drive_icon(drive, ico_src, set_root_system=False):
         # 部分 Win11 电脑要求盘根带「系统」属性（需管理员）
         if not set_file_attrs(root, hidden=False, system=True):
             return False, "已写入，但设置磁盘根目录属性失败（需要管理员权限）"
+    if is_admin():
+        # 管理员身份写入的文件会被标成 High 完整性（No-Write-Up），
+        # 之后普通权限的桌宠连删都删不掉（点「恢复默认图标」会报拒绝访问）。
+        # 这里立刻降回「中等」，保证以后能正常恢复。
+        for path in (ico, inf, ini):
+            lower_integrity_to_medium(path)
     refresh_icon_cache()
     return True, ""
 
 
 def remove_drive_icon(drive):
-    """恢复默认磁盘图标：删除我们放过的文件（含旧版遗留）。"""
+    """恢复默认磁盘图标：删除我们放过的文件（含旧版遗留）。
+
+    两个坑：
+      1) 文件带隐藏+系统属性时，删之前必须真的把属性清掉，否则「拒绝访问」；
+      2) 之前以「管理员身份」写入过的文件带 High 完整性标签（No-Write-Up），
+         普通权限的桌宠连删都删不了（WinError 5）→ 自动改用管理员权限删除（弹一次 UAC）。"""
     root = drive.rstrip("\\") + "\\"
-    removed = []
+    removed, denied, busy = [], [], []
     for name in ("desktop.ini", "autorun.inf", "icon.ico", "dshw_fish.ico"):
         p = os.path.join(root, name)
         if not os.path.exists(p):
             continue
+        set_file_attrs(p, hidden=False, system=False, readonly=False)
         try:
-            set_file_attrs(p, hidden=False, system=False)
             os.remove(p)
             removed.append(name)
+        except PermissionError:
+            denied.append(p)
         except OSError as e:
-            return False, f"删除 {name} 失败：{e}"
+            if getattr(e, "winerror", None) == 32:      # 文件被占用
+                busy.append(name)
+            else:
+                denied.append(p)
+
+    note = ""
+    if denied and not is_admin():
+        started, why = delete_files_elevated(denied)
+        if started:
+            for _ in range(25):                 # 最多等 2.5 秒，等提权进程删完
+                if not any(os.path.exists(p) for p in denied):
+                    break
+                time.sleep(0.1)
+            still = [p for p in denied if os.path.exists(p)]
+            removed += [os.path.basename(p) for p in denied if p not in still]
+            denied = still                      # 只有"仍然存在"的才算真失败
+            note = ("需要管理员权限的文件已通过 UAC 删除" if not still else
+                    "已请求管理员权限删除（UAC 弹窗点「是」），但这些文件仍在："
+                    + "、".join(os.path.basename(p) for p in still))
+        else:
+            names = "、".join(os.path.basename(p) for p in denied)
+            note = (f"{names} 需要管理员权限才能删除（{why}）——"
+                    "也可以先以管理员身份运行桌宠，再点「恢复默认图标」")
+    elif denied:
+        note = ("已是管理员仍删不掉：" + "、".join(os.path.basename(p) for p in denied)
+                + "（可能被安全软件占用）")
+
     refresh_icon_cache()
+    if busy:
+        note = (note + "；" if note else "") + \
+            "、".join(busy) + " 正被占用（关掉相关资源管理器窗口后重试）"
     if removed:
-        return True, "已删除：" + "、".join(removed) + "（重启后恢复默认图标）"
+        msg = "已删除：" + "、".join(removed) + "（图标缓存已刷新）"
+        return (not denied), (msg if not note else f"{msg}；{note}")
+    if note:
+        return False, note
     return True, "该磁盘没有需要删除的图标文件"
 
 
@@ -4080,7 +4188,11 @@ class PetWindow(QWidget):
         if clicked is restore_btn:
             ok, msg = remove_drive_icon(drive)
             self._log(f"磁盘图标恢复：{drive} - {msg}")
-            self.show_bubble_quick(msg[:40])
+            if ok:
+                self.show_bubble_quick(msg[:40])
+            else:
+                # 需要用户动手时（比如去点 UAC 弹窗）不能只弹个几十字就消失的气泡
+                QMessageBox.warning(self, "恢复默认图标", msg)
             return
         if clicked is not apply_btn:
             return

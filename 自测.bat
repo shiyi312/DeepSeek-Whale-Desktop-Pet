@@ -73,11 +73,12 @@ echo ---------- 13. 面板布局 / 回归 ---------->> "%REPORT%"
 python tests\check_panel_layout.py >> "%REPORT%" 2>&1
 python tests\check_regression.py >> "%REPORT%" 2>&1
 
-echo [14/14] 全屏判定 + 性能专项...
+echo [14/14] 全屏判定 + 性能专项 + 磁盘图标...
 echo.>> "%REPORT%"
-echo ---------- 14. 全屏判定 / 性能专项 ---------->> "%REPORT%"
+echo ---------- 14. 全屏判定 / 性能专项 / 磁盘图标 ---------->> "%REPORT%"
 python tests\check_fullscreen.py >> "%REPORT%" 2>&1
 python tests\check_perf.py >> "%REPORT%" 2>&1
+python tests\check_drive_icon.py >> "%REPORT%" 2>&1
 
 echo.>> "%REPORT%"
 echo ============================================================>> "%REPORT%"

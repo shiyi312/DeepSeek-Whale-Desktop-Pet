@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """磁盘图标与气泡方向自测：
 1) 磁盘图标：无权限时给出明确原因（不再假成功/静默失败）
 2) desktop.ini 用 UTF-16 编码（中文路径才有效）
@@ -80,6 +80,77 @@ def main():
     assert w.refresh_icon_cache() is True, "图标缓存刷新失败"
     print("3d. 图标缓存刷新 OK（ie4uinit + SHChangeNotify，不黑屏）")
     w.remove_drive_icon(tmp + "\\")
+
+    # 3e) 属性清除：设置过的隐藏/系统属性必须能真的清掉（旧版只 |= 不 &=，清不掉）
+    tmp2 = tempfile.mkdtemp()
+    probe = os.path.join(tmp2, "desktop.ini")
+    with open(probe, "w", encoding="utf-8") as f:
+        f.write("x")
+    assert w.set_file_attrs(probe, hidden=True, system=True), "设置属性失败"
+    a1 = ctypes.windll.kernel32.GetFileAttributesW(probe)
+    assert (a1 & 0x02) and (a1 & 0x04), "隐藏/系统属性未设上"
+    assert w.set_file_attrs(probe, hidden=False, system=False, readonly=False), "清除属性失败"
+    a2 = ctypes.windll.kernel32.GetFileAttributesW(probe)
+    assert not (a2 & 0x02) and not (a2 & 0x04), ("隐藏/系统属性没清掉（会导致删除时拒绝访问）", a2)
+    print("3e. 文件属性可设可清 OK（隐藏/系统真能被清掉）")
+
+    # 3f) 删除被拒绝（模拟 C 盘那种「管理员身份写入的高权限文件」）：
+    #     必须如实报告 + 给出解决路径，绝不能假成功
+    if w.is_admin():
+        print("3f. 跳过（当前是管理员，普通权限分支不适用）")
+    else:
+        real_remove = os.remove
+        real_admin = w.is_admin
+        real_elev = w.delete_files_elevated
+        try:
+            def deny_target(path):
+                if os.path.abspath(path).lower() == os.path.abspath(probe).lower():
+                    raise PermissionError(13, "拒绝访问")
+                return real_remove(path)
+
+            os.remove = deny_target
+            w.delete_files_elevated = lambda paths: (False, "提权请求被取消或失败（代码 5）")
+            w.is_admin = lambda: False
+            ok6, msg6 = w.remove_drive_icon(tmp2 + "\\")
+            assert ok6 is False, ("删除被拒绝时不该报成功", ok6, msg6)
+            assert "管理员" in msg6, ("应告诉用户需要管理员权限", msg6)
+            assert os.path.exists(probe), "文件不该凭空消失"
+            print(f"3f. 删除被拒绝时如实报告 OK → {msg6[:44]}")
+
+            # 3g) 提权删除：UAC 发起但文件没删掉时要说明，不能假装成功
+            w.delete_files_elevated = lambda paths: (True, "")
+            ok7, msg7 = w.remove_drive_icon(tmp2 + "\\")
+            assert ok7 is False and ("UAC" in msg7 or "仍在" in msg7), ("提权后仍失败应说明", msg7)
+            print(f"3g. UAC 删除未完成时如实报告 OK → {msg7[:44]}")
+
+            # 3g2) 提权删除成功（模拟 UAC 通过、文件被删掉）→ 必须报成功，不能因为
+            #      "曾经拒绝过" 就一直报失败
+            def fake_elevate(paths):
+                for p in paths:
+                    real_remove(p)
+                return True, ""
+
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("y")
+            w.delete_files_elevated = fake_elevate
+            ok9, msg9 = w.remove_drive_icon(tmp2 + "\\")
+            assert ok9 is True and not os.path.exists(probe), \
+                ("提权删除成功后应报成功", ok9, msg9)
+            print(f"3g2. 提权删除成功后报成功 OK → {msg9[:44]}")
+        finally:
+            os.remove = real_remove
+            w.is_admin = real_admin
+            w.delete_files_elevated = real_elev
+        if os.path.exists(probe):          # 3g2 里已被"提权"删掉，这里不能再删一次
+            real_remove(probe)
+        os.rmdir(tmp2)
+
+    # 3h) 完整性标签降级接口：不该抛异常（非管理员时可能返回 False，属正常）
+    ok8 = w.lower_integrity_to_medium(ico)
+    assert isinstance(ok8, bool)
+    print(f"3h. 完整性标签降级接口 OK（当前返回 {ok8}，非管理员返回 False 属正常）")
+    assert w.delete_files_elevated([]) == (False, ""), "空列表应直接返回，不去弹 UAC"
+    print("3i. 提权删除空列表不弹窗 OK")
 
     # 4) 无权限路径：必须返回明确原因，而不是假成功
     bad_dir = r"C:\Windows\System32\__dshw_no_perm__"
